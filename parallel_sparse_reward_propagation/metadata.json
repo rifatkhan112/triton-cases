@@ -1,0 +1,37 @@
+{
+    "id": "parallel_sparse_reward_propagation",
+    "difficulty": {
+        "rating": 5,
+        "rationale": "Sparse reward propagation in RL requires careful memory coalescing and efficient handling of sparse tensors."
+    },
+    "category": ["Triton"],
+    "optimization_type": ["memory_hierarchy", "vectorization"],
+    "task_type": ["from_scratch"],
+    "problem_description": "Design a Triton kernel that efficiently propagates sparse rewards through a batch of state transitions, leveraging memory-efficient operations and warp-level intrinsics.",
+    "code_context": {
+        "existing_code": "Existing implementation suffers from inefficient memory access and poor handling of sparse reward distributions.",
+        "constraints": ["Performance must be benchmarked on H100 GPUs.", "Sparse reward propagation should maintain numerical precision."]
+    },
+    "test_cases": [
+        {
+            "input": "Batch of 4096 state transitions with sparse rewards affecting only 5% of states. Example: [0, 0, 1.0, 0, 0, 0, 2.0, 0, 0, 0]",
+            "expected_output": "Correctly propagated rewards with minimal memory overhead. Example: [0, 0.99, 1.0, 0.9801, 0.9703, 0.9606, 2.0, 1.98, 1.9602, 1.9404]"
+        }
+    ],
+    "docker_config": {
+        "base_image": "nvidia/cuda:12.2.0-devel-ubuntu20.04",
+        "dependencies": ["torch", "triton"],
+        "docker_entrypoint": "python3 tests/benchmark.py"
+    },
+    "gpu_requirements": ["H100"],
+    "metadata": {
+        "use_case": "Optimizing reinforcement learning environments with sparse reward structures.",
+        "expected_speedup": "6-7x over CPU-based reward propagation.",
+        "related_ml_concepts": ["Sparse Reward Processing", "Credit Assignment in RL"]
+    },
+    "claude_verification": {
+        "attempts": 10,
+        "success": false,
+        "best_attempt_performance": "Failed edge cases with extreme sparsity (less than 2% non-zero rewards), but achieved a 6.3x speedup on a standard RL benchmark with 5% non-zero rewards."
+    }
+}
