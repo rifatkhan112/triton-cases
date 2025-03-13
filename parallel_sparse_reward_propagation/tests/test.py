@@ -22,7 +22,8 @@ if __name__ == "__main__":
 
     # Compute outputs using naive and triton implementations
     ref_output = sparse_reward_propagation_naive(rewards, transitions, importance_weights)
-    tri_output = sparse_reward_propagation_triton(rewards, transitions, importance_weights)
+    discount_factor = 0.99  # Example value, adjust as needed
+    tri_output = sparse_reward_propagation_triton(rewards, transitions, importance_weights, discount_factor)
 
     # Print shape info to debug
     print(f"ref_output shape: {ref_output.shape}")
