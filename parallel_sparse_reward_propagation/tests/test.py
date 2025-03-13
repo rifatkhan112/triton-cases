@@ -17,16 +17,12 @@ if __name__ == "__main__":
 
     # Generate random input tensors
     rewards = torch.randn((B, S), dtype=dtype, device="cuda", requires_grad=True)
-
-    # Ensure `transitions` is a valid transition matrix (B, S, S) if needed
-    transitions = torch.randint(0, 2, (B, S, S), dtype=torch.float32, device="cuda")
-    transitions /= transitions.sum(dim=-1, keepdim=True)  # Normalize for valid transitions
-
+    transitions = torch.randint(0, S, (B, S), dtype=torch.long, device="cuda")
     importance_weights = torch.rand((B, S), dtype=dtype, device="cuda", requires_grad=True)
 
     # Compute outputs using naive and triton implementations
-    ref_output = sparse_reward_propagation_naive(rewards, transitions, importance_weights)
     discount_factor = 0.99  # Example value, adjust as needed
+    ref_output = sparse_reward_propagation_naive(rewards, transitions, importance_weights, discount_factor)
     tri_output = sparse_reward_propagation_triton(rewards, transitions, importance_weights, discount_factor)
 
     # Print shape info to debug
@@ -39,30 +35,24 @@ if __name__ == "__main__":
     # Define gradient tensor with correct shape
     do = torch.randn_like(ref_output, dtype=dtype)
 
-    # Ensure gradient tensor matches output shape
+    # Fix gradient shape mismatch
     print(f"do shape before fix: {do.shape}")
     if do.shape != ref_output.shape:
         do = do.expand_as(ref_output)  # Ensure `do` matches ref_output
+
     print(f"do shape after fix: {do.shape}")
 
     # Compute gradients
     ref_output.backward(do, retain_graph=True)
     tri_output.backward(do, retain_graph=True)
 
-    # Extract gradients safely
+    # Extract gradients
     ref_d_rewards, ref_d_weights = rewards.grad.clone(), importance_weights.grad.clone()
-
-    # Reset gradients safely
-    rewards.grad.zero_()
-    importance_weights.grad.zero_()
+    rewards.grad, importance_weights.grad = None, None  # Reset gradients
 
     tri_d_rewards, tri_d_weights = rewards.grad.clone(), importance_weights.grad.clone()
 
     # Check if gradients match
-    assert check_close(ref_d_rewards, tri_d_rewards), "Gradient mismatch in rewards!"
-    assert check_close(ref_d_weights, tri_d_weights), "Gradient mismatch in importance weights!"
-
-    print("✅ Triton and Naive outputs & gradients match! Test Passed.")
     assert check_close(ref_d_rewards, tri_d_rewards), "Gradient mismatch in rewards!"
     assert check_close(ref_d_weights, tri_d_weights), "Gradient mismatch in importance weights!"
 
