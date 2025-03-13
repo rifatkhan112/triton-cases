@@ -1,7 +1,7 @@
 import torch
 import triton
-from code.naive_implementation import sparse_reward_propagation_naive
-from code.triton_implementation import sparse_reward_propagation_triton
+from parallel_sparse_reward_propagation.code.naive_implementation import sparse_reward_propagation_naive
+from parallel_sparse_reward_propagation.code.triton_implementation import sparse_reward_propagation_triton
 
 @triton.testing.perf_report(
     triton.testing.Benchmark(
