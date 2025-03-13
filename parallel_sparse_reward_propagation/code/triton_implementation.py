@@ -20,8 +20,8 @@ def sparse_reward_propagation_kernel(
     # Compute memory offset
     offset = batch_id * stride_b  # Offset per batch
     
-    # Load state transitions and rewards safely
-    state_seq = tl.arange(0, SEQ_LEN, dtype=tl.int32)  # ✅ Corrected usage of tl.arange()
+    # ✅ Fix: Remove dtype argument from tl.arange()
+    state_seq = tl.arange(0, SEQ_LEN)  # Corrected usage
     mask = state_seq < SEQ_LEN
 
     reward_seq = tl.load(rewards + offset + state_seq, mask=mask, other=0.0)
