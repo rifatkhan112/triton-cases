@@ -1,17 +1,22 @@
 import torch
 
-def sparse_reward_propagation_naive(states, rewards, gamma=0.99):
-    """Naive CPU implementation of sparse reward propagation."""
-    propagated_rewards = torch.zeros_like(rewards)
-    for i in range(len(states) - 2, -1, -1):
-        if rewards[i] != 0:
-            propagated_rewards[i] = rewards[i]
-        else:
-            propagated_rewards[i] = gamma * propagated_rewards[i + 1]
-    return propagated_rewards
+def sparse_reward_propagation_naive(states, rewards, discount=0.99):
+    """
+    Naive CPU-based implementation of sparse reward propagation.
 
-if __name__ == "__main__":
-    states = torch.arange(10)
-    rewards = torch.tensor([0, 0, 1, 0, 0, 0, 2, 0, 0, 0], dtype=torch.float32)
-    result = sparse_reward_propagation_naive(states, rewards)
-    print("Naive Propagated Rewards:", result)
+    Args:
+        states (torch.Tensor): Batch of state transitions (B, S).
+        rewards (torch.Tensor): Sparse reward tensor (B, S).
+        discount (float): Discount factor for reward propagation.
+
+    Returns:
+        torch.Tensor: Propagated rewards.
+    """
+    B, S = rewards.shape  # Batch size & sequence length
+    propagated_rewards = rewards.clone()
+
+    # Iterate backwards to propagate rewards
+    for t in range(S - 2, -1, -1):  # From second-last timestep to first
+        propagated_rewards[:, t] += discount * propagated_rewards[:, t + 1]
+
+    return propagated_rewards
