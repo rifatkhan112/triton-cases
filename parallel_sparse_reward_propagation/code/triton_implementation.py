@@ -1,12 +1,14 @@
+import torch
 import triton
 import triton.language as tl
-import torch
 
 @triton.jit
 def sparse_reward_propagation_kernel(
     rewards, transitions, importance_weights, prop_rewards, 
     B, S, discount,
-    stride_b, stride_s, BLOCK_SIZE: tl.constexpr
+    stride_b, stride_s, 
+    BLOCK_SIZE: tl.constexpr,
+    SEQ_LEN: tl.constexpr  # 👈 Ensure S is compile-time constant
 ):
     """
     Triton kernel for sparse reward propagation in RL environments.
@@ -20,17 +22,17 @@ def sparse_reward_propagation_kernel(
     offset = batch_id * stride_b  # Offset per batch
     
     # Load state transitions and rewards safely
-    state_seq = tl.arange(0, S)  # Sequential state indices
-    reward_seq = tl.load(rewards + offset + state_seq, mask=state_seq < S, other=0.0)
+    state_seq = tl.arange(0, SEQ_LEN)  # 👈 Use SEQ_LEN instead of S
+    reward_seq = tl.load(rewards + offset + state_seq, mask=state_seq < SEQ_LEN, other=0.0)
 
     # Initialize propagated rewards
-    tl.store(prop_rewards + offset + state_seq, reward_seq, mask=state_seq < S)
+    tl.store(prop_rewards + offset + state_seq, reward_seq, mask=state_seq < SEQ_LEN)
 
     # Parallelized backward reward propagation
-    for t in range(S - 2, -1, -1):  # Iterate backwards
-        prev_reward = tl.load(prop_rewards + offset + t + 1, mask=(t + 1 < S), other=0.0)
+    for t in range(SEQ_LEN - 2, -1, -1):  # Iterate backwards
+        prev_reward = tl.load(prop_rewards + offset + t + 1, mask=(t + 1 < SEQ_LEN), other=0.0)
         updated_reward = reward_seq[t] + discount * prev_reward
-        tl.store(prop_rewards + offset + t, updated_reward, mask=(t < S))
+        tl.store(prop_rewards + offset + t, updated_reward, mask=(t < SEQ_LEN))
 
 def sparse_reward_propagation_triton(rewards, transitions, importance_weights, discount=0.99):
     """
@@ -53,7 +55,8 @@ def sparse_reward_propagation_triton(rewards, transitions, importance_weights, d
         rewards, transitions, importance_weights, prop_rewards, 
         B, S, discount,
         rewards.stride(0), rewards.stride(1), 
-        BLOCK_SIZE=128  # Block size for parallel execution
+        BLOCK_SIZE=128,  # Block size for parallel execution
+        SEQ_LEN=S  # 👈 Pass sequence length as a compile-time constant
     )
     
     return prop_rewards
