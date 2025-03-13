@@ -21,6 +21,6 @@ def sparse_reward_propagation_naive(rewards, transitions, importance_weights, di
     # Iterate backwards over time for reward propagation
     for t in reversed(range(S - 1)):  
         # Fix shape mismatch by ensuring correct broadcasting
-        propagated_rewards[:, t] += discount * propagated_rewards[:, t + 1].view(B, 1)
+        propagated_rewards[:, t] += discount * propagated_rewards[:, t + 1]
 
     return propagated_rewards
