@@ -1,22 +1,26 @@
 import torch
 
-def sparse_reward_propagation_naive(states, rewards, discount=0.99):
+def sparse_reward_propagation_naive(rewards, transitions, importance_weights, discount=0.99):
     """
-    Naive CPU-based implementation of sparse reward propagation.
+    Naive implementation of sparse reward propagation for RL environments.
 
     Args:
-        states (torch.Tensor): Batch of state transitions (B, S).
-        rewards (torch.Tensor): Sparse reward tensor (B, S).
-        discount (float): Discount factor for reward propagation.
+        rewards (torch.Tensor): Sparse rewards tensor of shape (B, S).
+        transitions (torch.Tensor): Transition matrix of shape (B, S, S).
+        importance_weights (torch.Tensor): Importance weights for credit assignment.
+        discount (float): Discount factor for future rewards.
 
     Returns:
-        torch.Tensor: Propagated rewards.
+        torch.Tensor: Propagated rewards of shape (B, S).
     """
-    B, S, *_ = rewards.shape  # Allows extra dimensions
+    B, S = rewards.shape  # Batch size & sequence length
+
+    # Initialize propagated rewards
     propagated_rewards = rewards.clone()
 
-    # Iterate backwards to propagate rewards
-    for t in range(S - 2, -1, -1):  # From second-last timestep to first
-        propagated_rewards[:, t] += discount * propagated_rewards[:, t + 1]
+    # Iterate backwards over time for reward propagation
+    for t in reversed(range(S - 1)):  
+        # Fix shape mismatch by ensuring correct broadcasting
+        propagated_rewards[:, t] += discount * propagated_rewards[:, t + 1].view(B, 1)
 
     return propagated_rewards
