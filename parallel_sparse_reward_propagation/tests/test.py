@@ -17,13 +17,11 @@ if __name__ == "__main__":
 
     # Generate random input tensors
     rewards = torch.randn((B, S), dtype=dtype, device="cuda", requires_grad=True)
-    transitions = torch.randint(0, S, (B, S), dtype=torch.long, device="cuda")
-    importance_weights = torch.rand((B, S), dtype=dtype, device="cuda", requires_grad=True)
+    discount_factor = 0.99  # Example value, adjust as needed
 
     # Compute outputs using naive and triton implementations
-    discount_factor = 0.99  # Example value, adjust as needed
-    ref_output = sparse_reward_propagation_naive(rewards, transitions, importance_weights, discount_factor)
-    tri_output = sparse_reward_propagation_triton(rewards, transitions, importance_weights, discount_factor)
+    ref_output = sparse_reward_propagation_naive(rewards, discount_factor)
+    tri_output = sparse_reward_propagation_triton(rewards, discount_factor)
 
     # Print shape info to debug
     print(f"ref_output shape: {ref_output.shape}")
@@ -47,13 +45,11 @@ if __name__ == "__main__":
     tri_output.backward(do, retain_graph=True)
 
     # Extract gradients
-    ref_d_rewards, ref_d_weights = rewards.grad.clone(), importance_weights.grad.clone()
-    rewards.grad, importance_weights.grad = None, None  # Reset gradients
-
-    tri_d_rewards, tri_d_weights = rewards.grad.clone(), importance_weights.grad.clone()
+    ref_d_rewards = rewards.grad.clone()
+    rewards.grad = None  # Reset gradients
+    tri_d_rewards = rewards.grad.clone()
 
     # Check if gradients match
     assert check_close(ref_d_rewards, tri_d_rewards), "Gradient mismatch in rewards!"
-    assert check_close(ref_d_weights, tri_d_weights), "Gradient mismatch in importance weights!"
 
     print("✅ Triton and Naive outputs & gradients match! Test Passed.")
