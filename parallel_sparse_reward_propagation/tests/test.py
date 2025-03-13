@@ -1,8 +1,8 @@
 import torch
 import torch.nn.functional as F
 import time
-from code.naive_implementation import sparse_reward_propagation_naive
-from code.triton_implementation import sparse_reward_propagation_triton
+from parallel_sparse_reward_propagation.code.naive_implementation import sparse_reward_propagation_naive
+from parallel_sparse_reward_propagation.code.triton_implementation import sparse_reward_propagation_triton
 
 def check_close(A, B, atol=1e-3):
     return torch.allclose(A, B, rtol=0, atol=atol)
