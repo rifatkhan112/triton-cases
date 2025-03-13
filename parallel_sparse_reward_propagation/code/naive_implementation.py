@@ -12,8 +12,7 @@ def sparse_reward_propagation_naive(states, rewards, discount=0.99):
     Returns:
         torch.Tensor: Propagated rewards.
     """
-    print("Rewards shape:", rewards.shape)
-    B, S = rewards.shape  # Batch size & sequence length
+    B, S, *_ = rewards.shape  # Allows extra dimensions
     propagated_rewards = rewards.clone()
 
     # Iterate backwards to propagate rewards
