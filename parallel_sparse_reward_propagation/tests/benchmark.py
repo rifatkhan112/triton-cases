@@ -5,7 +5,7 @@ from parallel_sparse_reward_propagation.code.triton_implementation import sparse
 
 @triton.testing.perf_report(
     triton.testing.Benchmark(
-        x_names=['batch_size'],  # MUST match the function arg name
+        x_names=['batch_size'],  # MUST match function argument
         x_vals=[1024 * 2 ** i for i in range(0, 6)],  # Test different batch sizes
         line_arg='provider',
         line_vals=['torch_fwd', 'triton_fwd', 'torch_bwd', 'triton_bwd'],
@@ -25,10 +25,13 @@ def benchmark(batch_size, provider):
     # Create input tensors
     states = torch.randn((batch_size, sequence_length), dtype=dtype, device=device, requires_grad=requires_grad)
     rewards = torch.zeros((batch_size, sequence_length), dtype=dtype, device=device, requires_grad=requires_grad)
-    
+
     # Introduce sparsity (5% non-zero rewards)
     mask = torch.rand_like(rewards) < 0.05
-    rewards[mask] = torch.randn_like(rewards[mask])
+
+    # FIX: Clone rewards before modification
+    rewards = rewards.clone()
+    rewards[mask] = torch.randn_like(rewards[mask]).detach()
 
     do = torch.ones_like(rewards, dtype=dtype)
 
