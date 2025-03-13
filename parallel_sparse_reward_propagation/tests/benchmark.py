@@ -5,7 +5,7 @@ from parallel_sparse_reward_propagation.code.triton_implementation import sparse
 
 @triton.testing.perf_report(
     triton.testing.Benchmark(
-        x_names=['Batch Size'],
+        x_names=['batch_size'],  # MUST match the function arg name
         x_vals=[1024 * 2 ** i for i in range(0, 6)],  # Test different batch sizes
         line_arg='provider',
         line_vals=['torch_fwd', 'triton_fwd', 'torch_bwd', 'triton_bwd'],
@@ -37,16 +37,15 @@ def benchmark(batch_size, provider):
     
     # Run benchmark based on selected provider
     if provider == 'torch_fwd':
-        results = triton.testing.do_bench(lambda: sparse_reward_propagation_naive(states.cpu(), rewards.cpu()).cuda(), quantiles=quantiles)
+        results = triton.testing.do_bench(lambda: sparse_reward_propagation_naive(states.cpu()).cuda(), quantiles=quantiles)
     elif provider == 'triton_fwd':
-        results = triton.testing.do_bench(lambda: sparse_reward_propagation_triton(states, rewards), quantiles=quantiles)
+        results = triton.testing.do_bench(lambda: sparse_reward_propagation_triton(states), quantiles=quantiles)
     elif provider == 'torch_bwd':
-        results = triton.testing.do_bench(lambda: sparse_reward_propagation_naive(states.cpu(), rewards.cpu()).cuda().backward(do), quantiles=quantiles)
+        results = triton.testing.do_bench(lambda: sparse_reward_propagation_naive(states.cpu()).cuda().backward(do), quantiles=quantiles)
     elif provider == 'triton_bwd':
-        results = triton.testing.do_bench(lambda: sparse_reward_propagation_triton(states, rewards).backward(do), quantiles=quantiles)
+        results = triton.testing.do_bench(lambda: sparse_reward_propagation_triton(states).backward(do), quantiles=quantiles)
     
     return results
-
 
 if __name__ == '__main__':
     benchmark.run(print_data=True)
