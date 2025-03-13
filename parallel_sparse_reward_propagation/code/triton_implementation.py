@@ -21,7 +21,7 @@ def sparse_reward_propagation_kernel(
     offset = batch_id * stride_b  # Offset per batch
     
     # Load state transitions and rewards safely
-    state_seq = tl.arange(0, SEQ_LEN).to(tl.int32)  # ✅ Corrected usage of tl.arange()
+    state_seq = tl.arange(0, SEQ_LEN, dtype=tl.int32)  # ✅ Corrected usage of tl.arange()
     mask = state_seq < SEQ_LEN
 
     reward_seq = tl.load(rewards + offset + state_seq, mask=mask, other=0.0)
@@ -34,6 +34,7 @@ def sparse_reward_propagation_kernel(
         prev_reward = tl.load(prop_rewards + offset + t + 1, mask=(t + 1 < SEQ_LEN), other=0.0)
         updated_reward = reward_seq[t] + discount * prev_reward
         tl.store(prop_rewards + offset + t, updated_reward, mask=(t < SEQ_LEN))
+
 
 def sparse_reward_propagation_triton(rewards, discount):
     """
