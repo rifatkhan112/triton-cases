@@ -1,13 +1,18 @@
 import torch
 
-def sparse_reward_propagation_naive(rewards, discount=0.99):
+def sparse_reward_propagation_naive(rewards, discount):
     """
-    Naive implementation of backward pass for RL reward propagation.
-    (B, S) => (B, S)
+    Naive implementation of sparse reward propagation using PyTorch.
+
+    Args:
+        rewards (Tensor): shape (B, S), rewards tensor.
+        discount (float): Discount factor for reward propagation.
+
+    Returns:
+        Tensor: Propagated rewards of shape (B, S).
     """
     B, S = rewards.shape
     out = rewards.clone()
-    # Simple backward pass: out[:, t] += discount * out[:, t+1]
     for t in reversed(range(S - 1)):
-        out[:, t] = out[:, t] + discount * out[:, t + 1]
+        out[:, t] += discount * out[:, t + 1]
     return out
