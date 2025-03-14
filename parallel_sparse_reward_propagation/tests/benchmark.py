@@ -1,4 +1,6 @@
+import os
 import torch
+import matplotlib.pyplot as plt  # For displaying the generated plot
 import triton
 from parallel_sparse_reward_propagation.code.naive_implementation import sparse_reward_propagation_naive
 from parallel_sparse_reward_propagation.code.triton_implementation import sparse_reward_propagation_triton
@@ -12,7 +14,7 @@ from parallel_sparse_reward_propagation.code.triton_implementation import sparse
         line_names=['Torch Forward', 'Triton Forward', 'Torch Backward', 'Triton Backward'],
         styles=[('green', '-'), ('blue', '--'), ('red', '-.'), ('cyan', ':')],
         ylabel="Execution Time (ms)",
-        plot_name="Sparse Reward Propagation Performance",
+        plot_name="sparse_reward_propagation_performance",  # Plot name (PNG file)
         args={},
     )
 )
@@ -22,80 +24,109 @@ def benchmark(batch_size, provider):
     - Handles both forward and backward pass tests.
     - Ensures numerical stability in sparse settings.
     - Evaluates performance under different sparsity levels (5% and 0.1%).
+    - Automatically generates a table and a PNG plot using Triton's perf_report.
     """
     device = 'cuda'
     dtype = torch.float32
     sequence_length = 4096  # Large sequence length for benchmarking
     requires_grad = True
 
-    # ✅ Create input tensors
-    rewards = torch.zeros((batch_size, sequence_length), dtype=dtype, device=device, requires_grad=requires_grad)
+    # Create input tensors for two different sparsity levels
+    rewards_standard = torch.zeros((batch_size, sequence_length), dtype=dtype, device=device, requires_grad=requires_grad)
+    rewards_extreme = rewards_standard.clone()
 
-    # ✅ Introduce standard sparsity (5% non-zero rewards)
-    standard_mask = torch.rand_like(rewards) < 0.05  # 5% sparsity
-    rewards_standard = rewards.clone()
-    rewards_standard[standard_mask] = torch.randn_like(rewards_standard[standard_mask]).detach()
+    # Introduce standard sparsity (5% non-zero rewards)
+    mask_standard = torch.rand_like(rewards_standard) < 0.05
+    rewards_standard[mask_standard] = torch.randn_like(rewards_standard[mask_standard]).detach()
 
-    # ✅ Introduce extreme sparsity (0.1% non-zero rewards)
-    extreme_mask = torch.rand_like(rewards) < 0.001  # 0.1% sparsity
-    rewards_extreme = rewards.clone()
-    rewards_extreme[extreme_mask] = torch.randn_like(rewards_extreme[extreme_mask]).detach()
+    # Extreme sparsity test case (0.1% non-zero rewards)
+    mask_extreme = torch.rand_like(rewards_extreme) < 0.001
+    rewards_extreme[mask_extreme] = torch.randn_like(rewards_extreme[mask_extreme]).detach()
 
-    do = torch.ones_like(rewards, dtype=dtype)  # Gradient tensor for backward pass
-
+    do = torch.ones_like(rewards_standard, dtype=dtype)  # Gradient tensor for backward pass
     quantiles = [0.5, 0.2, 0.8]  # Median, 20th, 80th percentile
-    results_standard = 0, 0, 0
-    results_extreme = 0, 0, 0
 
-    # ✅ Run benchmark for both sparsity levels
+    # Depending on the provider, run bench for standard or extreme (pick one for each call)
+    # If you want separate calls for standard vs. extreme, you'd define them here.
+    results_standard = (0, 0, 0)
+    results_extreme = (0, 0, 0)
+
+    # Run benchmark based on provider (only standard for the sake of perf_report)
     if provider == 'torch_fwd':
-        results_standard = triton.testing.do_bench(lambda: sparse_reward_propagation_naive(rewards_standard.cpu(), 0.99).cuda(), quantiles=quantiles)
-        results_extreme = triton.testing.do_bench(lambda: sparse_reward_propagation_naive(rewards_extreme.cpu(), 0.99).cuda(), quantiles=quantiles)
+        # Standard
+        median_std, pc_std = triton.testing.do_bench(lambda: sparse_reward_propagation_naive(rewards_standard.cpu(), 0.99).cuda(), quantiles=quantiles)
+        low_std, high_std = pc_std
+
+        # Extreme
+        median_ext, pc_ext = triton.testing.do_bench(lambda: sparse_reward_propagation_naive(rewards_extreme.cpu(), 0.99).cuda(), quantiles=quantiles)
+        low_ext, high_ext = pc_ext
+
+        results_standard = (median_std, low_std, high_std)
+        results_extreme = (median_ext, low_ext, high_ext)
+
     elif provider == 'triton_fwd':
-        results_standard = triton.testing.do_bench(lambda: sparse_reward_propagation_triton(rewards_standard, 0.99), quantiles=quantiles)
-        results_extreme = triton.testing.do_bench(lambda: sparse_reward_propagation_triton(rewards_extreme, 0.99), quantiles=quantiles)
+        # Standard
+        median_std, pc_std = triton.testing.do_bench(lambda: sparse_reward_propagation_triton(rewards_standard, 0.99), quantiles=quantiles)
+        low_std, high_std = pc_std
+
+        # Extreme
+        median_ext, pc_ext = triton.testing.do_bench(lambda: sparse_reward_propagation_triton(rewards_extreme, 0.99), quantiles=quantiles)
+        low_ext, high_ext = pc_ext
+
+        results_standard = (median_std, low_std, high_std)
+        results_extreme = (median_ext, low_ext, high_ext)
+
     elif provider == 'torch_bwd':
-        results_standard = triton.testing.do_bench(lambda: sparse_reward_propagation_naive(rewards_standard.cpu(), 0.99).cuda().backward(do), quantiles=quantiles)
-        results_extreme = triton.testing.do_bench(lambda: sparse_reward_propagation_naive(rewards_extreme.cpu(), 0.99).cuda().backward(do), quantiles=quantiles)
+        # Standard
+        median_std, pc_std = triton.testing.do_bench(lambda: sparse_reward_propagation_naive(rewards_standard.cpu(), 0.99).cuda().backward(do), quantiles=quantiles)
+        low_std, high_std = pc_std
+
+        # Extreme
+        median_ext, pc_ext = triton.testing.do_bench(lambda: sparse_reward_propagation_naive(rewards_extreme.cpu(), 0.99).cuda().backward(do), quantiles=quantiles)
+        low_ext, high_ext = pc_ext
+
+        results_standard = (median_std, low_std, high_std)
+        results_extreme = (median_ext, low_ext, high_ext)
+
     elif provider == 'triton_bwd':
-        results_standard = triton.testing.do_bench(lambda: sparse_reward_propagation_triton(rewards_standard, 0.99).backward(do), quantiles=quantiles)
-        results_extreme = triton.testing.do_bench(lambda: sparse_reward_propagation_triton(rewards_extreme, 0.99).backward(do), quantiles=quantiles)
+        # Standard
+        median_std, pc_std = triton.testing.do_bench(lambda: sparse_reward_propagation_triton(rewards_standard, 0.99).backward(do), quantiles=quantiles)
+        low_std, high_std = pc_std
 
-    # ✅ Compute numerical stability metrics separately for both sparsity levels
-    naive_standard = sparse_reward_propagation_naive(rewards_standard.cpu(), 0.99).cuda()
-    triton_standard = sparse_reward_propagation_triton(rewards_standard, 0.99)
-    mae_standard = torch.mean(torch.abs(naive_standard - triton_standard)).item()
-    mad_standard = torch.max(torch.abs(naive_standard - triton_standard)).item()
-    percent_diff_standard = (torch.abs(naive_standard - triton_standard) / (torch.abs(naive_standard) + 1e-8)).mean().item()
+        # Extreme
+        median_ext, pc_ext = triton.testing.do_bench(lambda: sparse_reward_propagation_triton(rewards_extreme, 0.99).backward(do), quantiles=quantiles)
+        low_ext, high_ext = pc_ext
 
-    naive_extreme = sparse_reward_propagation_naive(rewards_extreme.cpu(), 0.99).cuda()
-    triton_extreme = sparse_reward_propagation_triton(rewards_extreme, 0.99)
-    mae_extreme = torch.mean(torch.abs(naive_extreme - triton_extreme)).item()
-    mad_extreme = torch.max(torch.abs(naive_extreme - triton_extreme)).item()
-    percent_diff_extreme = (torch.abs(naive_extreme - triton_extreme) / (torch.abs(naive_extreme) + 1e-8)).mean().item()
+        results_standard = (median_std, low_std, high_std)
+        results_extreme = (median_ext, low_ext, high_ext)
 
-    # ✅ Print Execution Results for both sparsity levels
-    print(f"\n🚀 Benchmark Results for batch_size={batch_size}, provider={provider}")
-    
-    print("\n📌 **Performance for 5% Sparsity**:")
-    print(f"Execution Time (Median): {results_standard[0]:.5f} ms")
-    print(f"Execution Time (20th Percentile): {results_standard[1]:.5f} ms")
-    print(f"Execution Time (80th Percentile): {results_standard[2]:.5f} ms")
-    print(f"Numerical Stability Metrics:")
-    print(f"  - Mean Absolute Error (MAE): {mae_standard:.5e}")
-    print(f"  - Maximum Absolute Difference (MAD): {mad_standard:.5e}")
-    print(f"  - Mean Percentage Difference: {percent_diff_standard * 100:.5f}%\n")
+    # Print a summary for standard and extreme
+    print(f"\n[Provider: {provider}, batch_size={batch_size}]")
+    ms_std, low_std, high_std = results_standard
+    ms_ext, low_ext, high_ext = results_extreme
 
-    print("\n📌 **Performance for 0.1% Sparsity (Extreme Case)**:")
-    print(f"Execution Time (Median): {results_extreme[0]:.5f} ms")
-    print(f"Execution Time (20th Percentile): {results_extreme[1]:.5f} ms")
-    print(f"Execution Time (80th Percentile): {results_extreme[2]:.5f} ms")
-    print(f"Numerical Stability Metrics:")
-    print(f"  - Mean Absolute Error (MAE): {mae_extreme:.5e}")
-    print(f"  - Maximum Absolute Difference (MAD): {mad_extreme:.5e}")
-    print(f"  - Mean Percentage Difference: {percent_diff_extreme * 100:.5f}%\n")
+    print("5% Sparsity (Standard):")
+    print(f"  Median: {ms_std:.5f} ms | 20th: {low_std:.5f} ms | 80th: {high_std:.5f} ms")
 
-    return results_standard, results_extreme
+    print("0.1% Sparsity (Extreme):")
+    print(f"  Median: {ms_ext:.5f} ms | 20th: {low_ext:.5f} ms | 80th: {high_ext:.5f} ms")
+
+    # Return standard results to comply with perf_report's requirement
+    return results_standard  # or results_extreme if you prefer
+
 
 if __name__ == '__main__':
+    # 1) Run the benchmark (prints table + saves plot automatically)
     benchmark.run(print_data=True)
+
+    # 2) Attempt to show the generated plot
+    plot_filename = "sparse_reward_propagation_performance.png"
+    if os.path.exists(plot_filename):
+        print(f"\n📊 Plot saved as '{plot_filename}'. Displaying now...")
+        img = plt.imread(plot_filename)
+        plt.imshow(img)
+        plt.axis("off")
+        plt.title("Sparse Reward Propagation Performance")
+        plt.show()
+    else:
+        print("⚠️ No plot file found. Check if the benchmark ran successfully.")
