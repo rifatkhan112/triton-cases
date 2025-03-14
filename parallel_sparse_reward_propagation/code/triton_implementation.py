@@ -21,20 +21,24 @@ def sparse_propagate_kernel(
         reward = tl.load(rewards_ptr + b*rewards_stride_b + s*rewards_stride_s)
         done = tl.load(dones_ptr + b*dones_stride_b + s*dones_stride_s)
         
-        # Modified to avoid continue statement
-        if not (reward == 0.0 and done == 0):
-            # Find trajectory start
+        # Process only non-zero rewards or terminal states
+        if (reward != 0.0) | (done != 0):
+            # Find trajectory start with fixed loop
             start = s
-            while start > 0:
-                prev_done = tl.load(dones_ptr + b*dones_stride_b + (start-1)*dones_stride_s)
-                if prev_done != 0:
+            for _ in range(S):  # Max possible steps
+                prev_start = start - 1
+                if prev_start < 0:
                     break
-                start -= 1
-                
-            # Propagate reward backward through trajectory
+                prev_done = tl.load(
+                    dones_ptr + b*dones_stride_b + prev_start*dones_stride_s
+                )
+                start = tl.where(prev_done == 0, prev_start, start)
+            
+            # Propagate reward backward
             cumulative = reward
             tl.atomic_add(output_ptr + b*rewards_stride_b + s*rewards_stride_s, cumulative)
             
+            # Propagate through trajectory
             for t in range(s-1, start-1, -1):
                 cumulative *= discount
                 tl.atomic_add(output_ptr + b*rewards_stride_b + t*rewards_stride_s, cumulative)
@@ -44,7 +48,6 @@ def sparse_reward_propagation_triton(
     discount: float = 0.99,
     dones: torch.Tensor = None
 ) -> torch.Tensor:
-    """Optimized Triton implementation with fixed control flow"""
     B, S = rewards.shape
     output = torch.zeros_like(rewards)
     
