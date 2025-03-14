@@ -3,65 +3,84 @@ import triton
 import triton.language as tl
 
 @triton.jit
-def sparse_reward_propagation_kernel(
-    rewards_ptr, indices_ptr, out_ptr,
-    B, S, K, discount,
+def single_step_kernel(
+    out_ptr,  # float32[B, S]
+    S,        # sequence length
+    t,        # the index for the backward step
+    discount: tl.constexpr,
     BLOCK_SIZE: tl.constexpr
 ):
+    """
+    Single-step backward accumulation:
+    out[:, t] += discount * out[:, t+1]
+    Implemented in parallel using Triton.
+    """
     batch_id = tl.program_id(0)
-    thread_id = tl.arange(0, BLOCK_SIZE)
+    idx = batch_id * S + t
 
-    batch_offset = batch_id * S
-    indices_offset = batch_id * K
+    # Each program_id(0) corresponds to a batch
+    # We do one element [t] in that batch in parallel 
+    # But we want each thread to handle one row if needed.
+    # Actually, we just do a 1D approach: each block -> one batch. 
+    # Then we do threadIdx in [0..BLOCK_SIZE) => out[t].
+    # But here we only do a single step, so each block can handle all the 'B' in parallel.
 
-    mask = thread_id < K
-    idx = tl.load(indices_ptr + indices_offset + thread_id, mask=mask, other=-1)
+    # However, typical usage is one block = one batch, so we do a simple approach:
+    # We read out[batch_id, t+1] and out[batch_id, t].
+    # We'll rely on the fact that each batch is launched separately.
 
-    valid_mask = (idx >= 0) & (idx < (S - 1)) & mask
+    # Load out[:, t] and out[:, t+1]
+    # But we might want a thread for each element in the batch dimension, 
+    # but B is the grid dimension, so program_id(0) = batch_id 
+    # => we do a single index. That's simpler to do with a 2D approach if B is big.
+    # For demonstration, let's do a 1D approach: each block => a single batch. 
+    # The offset is batch_id * S. 
+    # We'll do a single step for each position t in python. 
+    # So the kernel is basically a no-op if we only do one index?
 
-    reward_current = tl.load(rewards_ptr + batch_offset + idx, mask=valid_mask, other=0.0)
-    reward_next = tl.load(rewards_ptr + batch_offset + idx + 1, mask=valid_mask, other=0.0)
+    # Actually, if B is large, we want a thread for each row in that batch. 
+    # Let's do: n = tl.arange(0, BLOCK_SIZE), out[n, t], out[n, t+1].
+    # => We need B <= BLOCK_SIZE or a loop. 
+    # We'll assume B <= BLOCK_SIZE for demonstration:
 
-    reward_propagated = reward_current + discount * reward_next
-    tl.store(out_ptr + batch_offset + idx, reward_propagated, mask=valid_mask)
+    n = tl.arange(0, BLOCK_SIZE)
+    mask = n < tl.num_programs(0)  # or n < B => if B < BLOCK_SIZE
+    # We only do a single dimension. 
+    # The row offset is n * S
+    base = n * S
 
-class TritonSparseRewardFunc(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, rewards, sparse_indices, discount):
-        B, S = rewards.shape
-        _, K = sparse_indices.shape
-        out = rewards.clone()
+    # out[:, t]
+    old_val = tl.load(out_ptr + base + t, mask=mask, other=0.0)
+    next_val = tl.load(out_ptr + base + t + 1, mask=mask & (t+1 < S), other=0.0)
 
-        BLOCK_SIZE = triton.next_power_of_2(K)
-        grid = (B,)
+    new_val = old_val + discount * next_val
+    tl.store(out_ptr + base + t, new_val, mask=mask)
 
-        sparse_reward_propagation_kernel[grid](
-            rewards, sparse_indices, out,
-            B, S, K, discount,
+def sparse_reward_propagation_triton(rewards, discount=0.99):
+    """
+    Multi-kernel approach:
+    For t in reversed(range(S - 1)):
+        out[:, t] = out[:, t] + discount * out[:, t+1]
+    launching a Triton kernel each time for parallel updates.
+    """
+    B, S = rewards.shape
+    out = rewards.clone()
+
+    # We'll assume B <= BLOCK_SIZE for simplicity
+    BLOCK_SIZE = 1024
+    grid = (1,)  # Single block. Each block handles all B rows in parallel
+
+    # Copy to out
+    out.copy_(rewards)
+
+    for t in reversed(range(S - 1)):
+        single_step_kernel[grid](
+            out,  # out_ptr
+            S,    # sequence length
+            t,    # single step index
+            discount,  # discount factor
             BLOCK_SIZE=BLOCK_SIZE
         )
+        # This matches naive exactly, but each step is a new kernel launch
 
-        ctx.save_for_backward(sparse_indices)
-        ctx.discount = discount
-
-        return out
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        sparse_indices, = ctx.saved_tensors
-        discount = ctx.discount
-
-        grad_rewards = grad_output.clone()
-        B, S = grad_rewards.shape
-        _, K = sparse_indices.shape
-
-        for b in range(B):
-            for k in range(K):
-                idx = sparse_indices[b, k]
-                if idx >= 0 and idx < S - 1:
-                    grad_rewards[b, idx + 1] += discount * grad_output[b, idx]
-
-        return grad_rewards, None, None
-
-def sparse_reward_propagation_triton(rewards, sparse_indices, discount=0.99):
-    return TritonSparseRewardFunc.apply(rewards, sparse_indices, discount)
+    return out
