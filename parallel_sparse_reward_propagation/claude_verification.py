@@ -6,12 +6,12 @@ from parallel_sparse_reward_propagation.code.naive_implementation import sparse_
 from parallel_sparse_reward_propagation.code.triton_implementation import sparse_reward_propagation_triton
 
 # Initialize Anthropic API client
-client = anthropic.Anthropic(api_key="your_api_key_here")  # Replace with a valid API key
+client = anthropic.Anthropic(api_key="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")  # Replace with a valid API key
 
 # Define verification parameters
 NUM_ATTEMPTS = 10
-MAX_TOKENS = 512
-MODEL_NAME = "claude-3-sonnet-20240229"
+MAX_TOKENS = 1024
+MODEL_NAME = "claude-3-5-sonnet-20241022"
 
 # Function to test Claude's ability to solve the problem
 def run_claude_verification():
