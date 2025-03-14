@@ -33,26 +33,26 @@ def run_claude_verification():
     # Prepare verification prompt for Claude
     prompt = f"""
     You are given two tensors from different implementations of sparse reward propagation in RL.
-    
+
     - Reference Implementation (CPU, Torch): {ref_output.detach().cpu().numpy().tolist()}
     - Optimized Implementation (Triton, GPU): {tri_output.detach().cpu().numpy().tolist()}
 
-    Check if both outputs match within a numerical tolerance of 1e-5. 
+    Check if both outputs match within a numerical tolerance of 1e-5.
     If they do, respond with "Pass ✅".
     If they do not, respond with "Fail ❌" and explain the discrepancy.
     """
 
     print("🚀 Running Claude Verification Attempt 1/10...")
 
-    # Run verification request
+    # ✅ Fix: Use Claude Sonnet 3.5 with max_tokens=1024
     try:
-        response = client.completions.create(
-            model="claude-3-opus-20240229",
-            prompt=prompt,
-            max_tokens=100,
+        response = client.messages.create(
+            model="claude-3.5-sonnet-20240229",  # ✅ Use Sonnet 3.5
+            max_tokens=1024,  # ✅ Set max tokens to 1024
+            messages=[{"role": "user", "content": prompt}]
         )
 
-        result = response.completion
+        result = response.content[0].text
         print(f"🔍 Claude Verification Result: {result}")
 
         # Check if verification passed
