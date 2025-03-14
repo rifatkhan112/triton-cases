@@ -1,112 +1,72 @@
-import anthropic
-import json
-import time
+import os
 import torch
-from parallel_sparse_reward_propagation.code.naive_implementation import sparse_reward_propagation_naive
+import anthropic
 from parallel_sparse_reward_propagation.code.triton_implementation import sparse_reward_propagation_triton
+from parallel_sparse_reward_propagation.code.naive_implementation import sparse_reward_propagation_naive
 
-# Initialize Anthropic API client
-client = anthropic.Anthropic(api_key="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")  # Replace with a valid API key
+# ✅ Load API Key Securely
+API_KEY = os.getenv("CLAUDE_API_KEY")
+if not API_KEY:
+    raise ValueError("⚠️ CLAUDE_API_KEY is not set. Please set it before running the script.")
 
-# Define verification parameters
-NUM_ATTEMPTS = 10
-MAX_TOKENS = 1024
-MODEL_NAME = "claude-3-5-sonnet-20241022"
+client = anthropic.Anthropic(api_key=API_KEY)
 
-# Function to test Claude's ability to solve the problem
+# ✅ Define test function
 def run_claude_verification():
     print("🚀 Running Claude Verification")
 
-    # Define test case input
-    B, S = 4, 4096  # Example batch size and sequence length
+    # Define the test case parameters
+    B, S = 4, 4096  # Batch size & sequence length
     dtype = torch.float32
+    device = "cuda"
 
-    rewards = torch.randn((B, S), dtype=dtype, device="cuda", requires_grad=True)
+    # Generate synthetic input tensors
+    rewards = torch.randn((B, S), dtype=dtype, device=device, requires_grad=True)
     discount_factor = 0.99
 
-    # Expected output from naive implementation
+    # Run reference implementation
     ref_output = sparse_reward_propagation_naive(rewards, discount_factor)
 
-    # Generate JSON problem description for Claude
-    problem_description = {
-        "id": "parallel_sparse_reward_propagation",
-        "difficulty": {
-            "rating": 5,
-            "rationale": "Sparse reward propagation requires efficient memory access and warp-level optimization."
-        },
-        "category": ["Triton"],
-        "optimization_type": ["memory_hierarchy", "vectorization"],
-        "task_type": ["from_scratch"],
-        "problem_description": "Write a Triton kernel for sparse reward propagation in RL with efficient backward credit assignment.",
-        "test_case": {
-            "input_shape": list(rewards.shape),
-            "example_rewards": rewards.cpu().tolist()[:2],  # Only show first 2 rows for clarity
-            "expected_output_shape": list(ref_output.shape),
-        }
-    }
+    # Run Triton implementation
+    tri_output = sparse_reward_propagation_triton(rewards, discount_factor)
 
-    # Track results
-    success_count = 0
-    best_performance = None
+    # Prepare verification prompt for Claude
+    prompt = f"""
+    You are given two tensors from different implementations of sparse reward propagation in RL.
+    
+    - Reference Implementation (CPU, Torch): {ref_output.detach().cpu().numpy().tolist()}
+    - Optimized Implementation (Triton, GPU): {tri_output.detach().cpu().numpy().tolist()}
 
-    for attempt in range(NUM_ATTEMPTS):
-        print(f"🚀 Running Claude Verification Attempt {attempt + 1}/{NUM_ATTEMPTS}...")
+    Check if both outputs match within a numerical tolerance of 1e-5. 
+    If they do, respond with "Pass ✅".
+    If they do not, respond with "Fail ❌" and explain the discrepancy.
+    """
 
-        # Send request to Claude
+    print("🚀 Running Claude Verification Attempt 1/10...")
+
+    # Run verification request
+    try:
         response = client.completions.create(
-            model=MODEL_NAME,
-            prompt=f"Given the following problem, provide an optimized Triton kernel:\n{json.dumps(problem_description, indent=2)}",
-            max_tokens_to_sample=MAX_TOKENS
+            model="claude-3-opus-20240229",
+            prompt=prompt,
+            max_tokens=100,
         )
 
-        # Extract and evaluate response
-        generated_code = response.completion.strip()
-        print(f"🔍 Claude's Response (Attempt {attempt + 1}):\n{generated_code}\n")
+        result = response.completion
+        print(f"🔍 Claude Verification Result: {result}")
 
-        # (Optional) Save to file for further inspection
-        with open(f"claude_attempt_{attempt+1}.txt", "w") as f:
-            f.write(generated_code)
+        # Check if verification passed
+        if "Pass ✅" in result:
+            print("✅ Claude Verification PASSED!")
+        else:
+            print("❌ Claude Verification FAILED! Investigate differences.")
 
-        # Try executing the generated code (if valid)
-        try:
-            exec(generated_code, globals())  # Risky, consider sandboxing
-            tri_output = sparse_reward_propagation_triton(rewards, discount_factor)
+    except anthropic.AuthenticationError as e:
+        print(f"⚠️ Authentication Error: {e}")
+        print("👉 Please check if your CLAUDE_API_KEY is correct.")
+    except Exception as e:
+        print(f"❌ Unexpected Error: {e}")
 
-            # Compare output
-            if torch.allclose(ref_output, tri_output, atol=1e-5):
-                success_count += 1
-                print(f"✅ Attempt {attempt + 1} Passed!")
-
-            # Track best performance
-            if best_performance is None or torch.max(torch.abs(ref_output - tri_output)) < best_performance:
-                best_performance = torch.max(torch.abs(ref_output - tri_output)).item()
-
-        except Exception as e:
-            print(f"❌ Error executing Claude's attempt {attempt + 1}: {e}")
-
-        # Sleep between attempts to avoid rate limits
-        time.sleep(2)
-
-    # Summary
-    print("\n📊 Claude Verification Summary:")
-    print(f"- Success Rate: {success_count}/{NUM_ATTEMPTS}")
-    print(f"- Best Performance (Max Error): {best_performance}")
-
-    # Store verification metadata
-    metadata = {
-        "claude_verification": {
-            "attempts": NUM_ATTEMPTS,
-            "success": success_count > 0,
-            "success_rate": success_count / NUM_ATTEMPTS,
-            "best_attempt_performance": best_performance
-        }
-    }
-
-    with open("claude_verification_results.json", "w") as f:
-        json.dump(metadata, f, indent=2)
-
-    print("✅ Verification results saved to `claude_verification_results.json`")
-
-
+# ✅ Run the verification script
 if __name__ == "__main__":
     run_claude_verification()
