@@ -30,16 +30,22 @@ def run_claude_verification():
     # Run Triton implementation
     tri_output = sparse_reward_propagation_triton(rewards, discount_factor)
 
-    # Prepare verification prompt for Claude
+    # ✅ Compute key metrics instead of sending full tensors
+    mae = torch.mean(torch.abs(ref_output - tri_output)).item()
+    mad = torch.max(torch.abs(ref_output - tri_output)).item()
+    percent_diff = (torch.abs(ref_output - tri_output) / (torch.abs(ref_output) + 1e-8)).mean().item()
+
+    # ✅ Updated prompt (MUCH smaller)
     prompt = f"""
-    You are given two tensors from different implementations of sparse reward propagation in RL.
+    You are given a comparison between two implementations of sparse reward propagation.
 
-    - Reference Implementation (CPU, Torch): {ref_output.detach().cpu().numpy().tolist()}
-    - Optimized Implementation (Triton, GPU): {tri_output.detach().cpu().numpy().tolist()}
+    - Mean Absolute Error (MAE): {mae}
+    - Maximum Absolute Difference (MAD): {mad}
+    - Mean Percentage Difference: {percent_diff * 100:.5f}%
 
-    Check if both outputs match within a numerical tolerance of 1e-5.
-    If they do, respond with "Pass ✅".
-    If they do not, respond with "Fail ❌" and explain the discrepancy.
+    Check if the numerical differences are within an acceptable tolerance (1e-5).
+    If they are, respond with "Pass ✅".
+    If not, respond with "Fail ❌" and suggest possible reasons for the discrepancy.
     """
 
     print("🚀 Running Claude Verification Attempt 1/10...")
