@@ -48,7 +48,7 @@ def run_claude_verification():
     try:
         response = client.messages.create(
             model="claude-3.5-sonnet-20241022",  # ✅ Corrected model name
-            max_tokens=1024,  # ✅ Set max tokens to 1024
+            max_tokens=8192,  # ✅ Set max tokens to 8192
             messages=[{"role": "user", "content": prompt}]
         )
 
