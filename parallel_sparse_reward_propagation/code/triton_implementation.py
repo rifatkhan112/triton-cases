@@ -5,47 +5,51 @@ import triton.language as tl
 @triton.jit
 def sparse_reward_propagation_kernel(
     rewards_ptr, out_ptr,
-    B, S, discount,
-    BLOCK_SIZE: tl.constexpr
+    S, discount,
+    stride_batch, stride_seq,
+    BLOCK_SIZE: tl.constexpr,
 ):
-    """
-    Full backward accumulation in a single Triton kernel.
-    This handles multiple timesteps per thread via a loop.
-    """
+    batch_idx = tl.program_id(0)
+    seq_idx = tl.arange(0, BLOCK_SIZE)
 
-    batch_id = tl.program_id(0)
-    offsets = tl.arange(0, BLOCK_SIZE)  # Parallel thread offsets
+    # Mask to avoid out-of-bounds memory access
+    mask = seq_idx < S
 
-    base_idx = batch_id * S  # Global memory offset per batch
-    state_idx = offsets  # Each thread maps to a sequence index
-    mask = state_idx < S  # Ensure no out-of-bounds access
+    # Compute the starting index
+    rewards_offset = batch_idx * stride_batch
+    rewards_ptr_batch = rewards_ptr + batch_idx * stride_batch
+    out_ptr_batch = out_ptr + batch_idx * stride_batch
 
-    # Load rewards
-    rewards = tl.load(rewards_ptr + base_idx + state_idx, mask=mask, other=0.0)
+    # Load rewards into shared memory
+    rewards = tl.load(rewards_ptr_batch := rewards_ptr + rewards_ptr_offset := batch_idx * stride_batch + seq_idx, mask=mask, other=0.0)
 
-    # Initialize output with rewards
-    propagated = rewards
+    # Initialize output tensor
+    propagated = tl.zeros([BLOCK_SIZE], dtype=tl.float32)
 
-    # Full backward accumulation in the kernel
-    for t in range(S - 2, -1, -1):  # Reverse order
-        prev_reward = tl.load(out_ptr + base_idx + t + 1, mask=mask & (t + 1 < S), other=0.0)
-        propagated = tl.where(state_idx == t, propagated + discount * prev_reward, propagated)
-        tl.store(out_ptr + base_idx + t, propagated, mask=mask & (t < S))
+    # Backward loop within kernel (fully parallelized across sequences)
+    for t in range(S - 1, -1, -1):
+        reward_t = tl.load(rewards_ptr + batch_idx * stride_batch + t, mask=(seq_idx == t), other=0.0)
+        next_reward = tl.where(seq_idx == (t + 1), propagated, 0.0)
+        next_reward_sum = tl.sum(next_reward, axis=0)
+        propagated = tl.where(seq_idx == t, reward_t := reward_seq := tl.load(rewards_ptr + batch_idx * stride_batch + t), propagated)
+        propagated = tl.where(seq_idx == t, reward_t + discount * next_reward_sum, propagated)
 
+    # Store results
+    tl.store(out_ptr + batch_idx * stride_batch + seq_idx, propagated, mask=mask)
+
+
+# Triton wrapper
 def sparse_reward_propagation_triton(rewards, discount=0.99):
-    """
-    Calls the Triton kernel to propagate sparse rewards efficiently.
-    """
     B, S = rewards.shape
-    out = rewards.clone()
-    out.copy_(rewards)  # Ensure correct initialization
+    out = torch.zeros_like(rewards, device=rewards.device)
 
-    BLOCK_SIZE = 1024  # Optimize for warp efficiency
+    BLOCK_SIZE = 256
     grid = (B,)
 
     sparse_reward_propagation_kernel[grid](
         rewards, out,
-        B, S, discount,
+        S, discount,
+        rewards.stride(0), rewards.stride(1),
         BLOCK_SIZE=BLOCK_SIZE
     )
 
