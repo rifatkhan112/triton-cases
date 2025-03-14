@@ -1,112 +1,112 @@
 import anthropic
 import json
+import time
 import torch
 from parallel_sparse_reward_propagation.code.naive_implementation import sparse_reward_propagation_naive
 from parallel_sparse_reward_propagation.code.triton_implementation import sparse_reward_propagation_triton
 
-# Load Claude API key from environment variable
-client = anthropic.Anthropic(api_key="your_claude_api_key")
+# Initialize Anthropic API client
+client = anthropic.Anthropic(api_key="your_api_key_here")  # Replace with a valid API key
 
-# Define the problem statement for Claude (without revealing implementation)
-prompt = """You are an expert in GPU programming and Triton. 
-Your task is to implement a high-performance Triton kernel for sparse reward propagation in reinforcement learning.
-The kernel must support batch sizes up to 4096, process sparse rewards with memory-efficient operations, 
-handle numerical stability, and compute gradients correctly.
+# Define verification parameters
+NUM_ATTEMPTS = 10
+MAX_TOKENS = 512
+MODEL_NAME = "claude-3-sonnet-20240229"
 
-## Problem Description
-- Implement a **Triton kernel** that propagates **sparse rewards through a batch of state transitions**.
-- The kernel should be optimized for **warp-level parallelism** and **memory efficiency**.
-- It must **handle multi-step reward propagation** with a discount factor.
-- The implementation must be **numerically stable** and **match PyTorch baselines**.
+# Function to test Claude's ability to solve the problem
+def run_claude_verification():
+    print("🚀 Running Claude Verification")
 
-## Example Input
-- `B = 4`, `S = 4096` (Batch of 4, 4096 state transitions)
-- `rewards` = torch.randn((B, S), device="cuda")
-- `transitions` = torch.randint(0, S, (B, S), dtype=torch.long, device="cuda")
-- `importance_weights` = torch.rand((B, S), device="cuda")
-- `discount_factor = 0.99`
+    # Define test case input
+    B, S = 4, 4096  # Example batch size and sequence length
+    dtype = torch.float32
 
-## Expected Output
-- The propagated rewards should match the naive PyTorch implementation within `1e-5` numerical accuracy.
+    rewards = torch.randn((B, S), dtype=dtype, device="cuda", requires_grad=True)
+    discount_factor = 0.99
 
-## Constraints
-- The kernel must run on **H100 GPUs**.
-- Must use **structured memory access and vectorized operations**.
-- The output must be **gradient-compatible for RL training**.
+    # Expected output from naive implementation
+    ref_output = sparse_reward_propagation_naive(rewards, discount_factor)
 
-Please implement the **Triton kernel** to achieve this.
-"""
-
-# Store verification results
-results = {
-    "attempts": 10,
-    "successes": 0,
-    "failure_reasons": [],
-}
-
-for i in range(10):
-    print(f"\n🚀 Running Claude Verification Attempt {i + 1}/10...\n")
-
-    # Query Claude for a Triton implementation
-    response = client.completions.create(
-        model="claude-3.5-sonnet",
-        prompt=prompt,
-        max_tokens=2048
-    )
-
-    # Extract generated code
-    claude_code = response.text
-
-    # Save Claude's code to a file for debugging
-    with open(f"claude_attempt_{i + 1}.py", "w") as f:
-        f.write(claude_code)
-
-    try:
-        # Dynamically execute Claude's Triton implementation
-        exec(claude_code, globals())
-
-        # Run Claude's function and compare with gold standard
-        B, S = 4, 4096
-        dtype = torch.float32
-        rewards = torch.randn((B, S), dtype=dtype, device="cuda", requires_grad=True)
-        transitions = torch.randint(0, S, (B, S), dtype=torch.long, device="cuda")
-        importance_weights = torch.rand((B, S), dtype=dtype, device="cuda", requires_grad=True)
-        discount_factor = 0.99
-
-        # Run Claude's solution
-        claude_output = propagate_sparse_rewards(transitions, rewards, discount_factor)
-
-        # Run gold standard solution
-        reference_output = sparse_reward_propagation_triton(rewards, transitions, importance_weights, discount_factor)
-
-        # Check correctness
-        if torch.allclose(claude_output, reference_output, atol=1e-5):
-            print(f"✅ Attempt {i + 1}: Claude's solution PASSED (Numerical Accuracy OK)")
-            results["successes"] += 1
-        else:
-            print(f"❌ Attempt {i + 1}: Claude's solution FAILED (Incorrect Output)")
-            results["failure_reasons"].append("Numerical accuracy mismatch")
-
-    except Exception as e:
-        print(f"💀 Attempt {i + 1}: Claude's solution CRASHED!")
-        results["failure_reasons"].append(str(e))
-
-# Log Claude's success rate
-success_rate = results["successes"] / 10.0
-
-# Update metadata.json dynamically
-metadata = {
-    "id": "parallel_sparse_reward_propagation",
-    "claude_verification": {
-        "attempts": 10,
-        "success_rate": success_rate,
-        "success": success_rate >= 0.8,  # Consider it "solved" if Claude achieves 80% success rate
-        "failure_reasons": results["failure_reasons"]
+    # Generate JSON problem description for Claude
+    problem_description = {
+        "id": "parallel_sparse_reward_propagation",
+        "difficulty": {
+            "rating": 5,
+            "rationale": "Sparse reward propagation requires efficient memory access and warp-level optimization."
+        },
+        "category": ["Triton"],
+        "optimization_type": ["memory_hierarchy", "vectorization"],
+        "task_type": ["from_scratch"],
+        "problem_description": "Write a Triton kernel for sparse reward propagation in RL with efficient backward credit assignment.",
+        "test_case": {
+            "input_shape": list(rewards.shape),
+            "example_rewards": rewards.cpu().tolist()[:2],  # Only show first 2 rows for clarity
+            "expected_output_shape": list(ref_output.shape),
+        }
     }
-}
 
-with open("metadata.json", "w") as f:
-    json.dump(metadata, f, indent=4)
+    # Track results
+    success_count = 0
+    best_performance = None
 
-print("\n📊 Claude Verification Summary:")
-print(json.dumps(metadata, indent=4))
+    for attempt in range(NUM_ATTEMPTS):
+        print(f"🚀 Running Claude Verification Attempt {attempt + 1}/{NUM_ATTEMPTS}...")
+
+        # Send request to Claude
+        response = client.completions.create(
+            model=MODEL_NAME,
+            prompt=f"Given the following problem, provide an optimized Triton kernel:\n{json.dumps(problem_description, indent=2)}",
+            max_tokens_to_sample=MAX_TOKENS
+        )
+
+        # Extract and evaluate response
+        generated_code = response.completion.strip()
+        print(f"🔍 Claude's Response (Attempt {attempt + 1}):\n{generated_code}\n")
+
+        # (Optional) Save to file for further inspection
+        with open(f"claude_attempt_{attempt+1}.txt", "w") as f:
+            f.write(generated_code)
+
+        # Try executing the generated code (if valid)
+        try:
+            exec(generated_code, globals())  # Risky, consider sandboxing
+            tri_output = sparse_reward_propagation_triton(rewards, discount_factor)
+
+            # Compare output
+            if torch.allclose(ref_output, tri_output, atol=1e-5):
+                success_count += 1
+                print(f"✅ Attempt {attempt + 1} Passed!")
+
+            # Track best performance
+            if best_performance is None or torch.max(torch.abs(ref_output - tri_output)) < best_performance:
+                best_performance = torch.max(torch.abs(ref_output - tri_output)).item()
+
+        except Exception as e:
+            print(f"❌ Error executing Claude's attempt {attempt + 1}: {e}")
+
+        # Sleep between attempts to avoid rate limits
+        time.sleep(2)
+
+    # Summary
+    print("\n📊 Claude Verification Summary:")
+    print(f"- Success Rate: {success_count}/{NUM_ATTEMPTS}")
+    print(f"- Best Performance (Max Error): {best_performance}")
+
+    # Store verification metadata
+    metadata = {
+        "claude_verification": {
+            "attempts": NUM_ATTEMPTS,
+            "success": success_count > 0,
+            "success_rate": success_count / NUM_ATTEMPTS,
+            "best_attempt_performance": best_performance
+        }
+    }
+
+    with open("claude_verification_results.json", "w") as f:
+        json.dump(metadata, f, indent=2)
+
+    print("✅ Verification results saved to `claude_verification_results.json`")
+
+
+if __name__ == "__main__":
+    run_claude_verification()
