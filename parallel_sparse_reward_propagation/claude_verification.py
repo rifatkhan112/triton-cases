@@ -48,32 +48,45 @@ def run_claude_verification():
     If not, respond with "Fail ❌" and suggest possible reasons for the discrepancy.
     """
 
-    print("🚀 Running Claude Verification Attempt 1/10...")
+    max_attempts = 10
+    results = []
 
-    # ✅ Fix: Use Correct Claude Model Name
-    try:
-        response = client.messages.create(
-            model="claude-3-5-sonnet-20241022",  # ✅ Corrected model name
-            max_tokens=8192,  # ✅ Set max tokens to 8192
-            messages=[{"role": "user", "content": prompt}]
-        )
+    for attempt in range(1, max_attempts + 1):
+        print(f"🚀 Running Claude Verification Attempt {attempt}/{max_attempts}...")
 
-        result = response.content[0].text
-        print(f"🔍 Claude Verification Result: {result}")
+        try:
+            response = client.messages.create(
+                model="claude-3-5-sonnet-20241022",  # ✅ Corrected model name
+                max_tokens=8192,  # ✅ Set max tokens to 8192
+                messages=[{"role": "user", "content": prompt}]
+            )
 
-        # Check if verification passed
-        if "Pass ✅" in result:
-            print("✅ Claude Verification PASSED!")
-        else:
-            print("❌ Claude Verification FAILED! Investigate differences.")
+            # ✅ Fix: Properly Extract Claude's Response
+            result = response.content[0].text if response and hasattr(response, "content") else "❌ No response received."
+            results.append(result)
 
-    except anthropic.AuthenticationError as e:
-        print(f"⚠️ Authentication Error: {e}")
-        print("👉 Please check if your CLAUDE_API_KEY is correct.")
-    except anthropic.NotFoundError:
-        print("❌ Model not found. Ensure you are using the correct model name: 'claude-3-5-sonnet-20241022'.")
-    except Exception as e:
-        print(f"❌ Unexpected Error: {e}")
+            print(f"🔍 Claude Verification Result: {result}")
+
+            # Check if verification passed
+            if "Pass ✅" in result:
+                print("✅ Claude Verification PASSED!")
+            else:
+                print("❌ Claude Verification FAILED! Investigate differences.")
+
+        except anthropic.AuthenticationError as e:
+            print(f"⚠️ Authentication Error: {e}")
+            print("👉 Please check if your CLAUDE_API_KEY is correct.")
+        except anthropic.NotFoundError:
+            print("❌ Model not found. Ensure you are using the correct model name: 'claude-3-5-sonnet-20241022'.")
+        except Exception as e:
+            print(f"❌ Unexpected Error on attempt {attempt}: {e}")
+        
+        print("🔄 Retrying next attempt...\n")
+
+    print("🚀 All verification attempts completed.")
+    print("📜 Final Results Summary:")
+    for i, res in enumerate(results, 1):
+        print(f"Attempt {i}: {res}")
 
 # ✅ Run the verification script
 if __name__ == "__main__":
