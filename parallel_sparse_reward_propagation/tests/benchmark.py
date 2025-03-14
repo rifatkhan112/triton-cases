@@ -55,9 +55,16 @@ def benchmark(batch_size, provider):
         elif provider == 'triton_fwd':
             return triton.testing.do_bench(lambda: sparse_reward_propagation_triton(rewards, 0.99), quantiles=quantiles)
         elif provider == 'torch_bwd':
-            return triton.testing.do_bench(lambda: sparse_reward_propagation_naive(rewards.cpu(), 0.99).cuda().backward(do), quantiles=quantiles)
+            def torch_backward():
+                output = sparse_reward_propagation_naive(rewards.cpu(), 0.99).cuda()
+                output.backward(do, retain_graph=True)
+            results = triton.testing.do_bench(torch_backward, quantiles=quantiles)
+
         elif provider == 'triton_bwd':
-            return triton.testing.do_bench(lambda: sparse_reward_propagation_triton(rewards, 0.99).backward(do), quantiles=quantiles)
+            def triton_backward():
+                output = sparse_reward_propagation_triton(rewards, 0.99)
+                output.backward(do, retain_graph=True)
+            results = triton.testing.do_bench(triton_backward, quantiles=quantiles)
         return None
 
     # ✅ Benchmark for both standard (5%) and extreme (0.1%) sparsity cases
