@@ -44,10 +44,10 @@ def run_claude_verification():
 
     print("🚀 Running Claude Verification Attempt 1/10...")
 
-    # ✅ Fix: Use Claude Sonnet 3.5 with max_tokens=1024
+    # ✅ Fix: Use Claude Sonnet 3.5 with correct model name
     try:
         response = client.messages.create(
-            model="claude-3.5-sonnet-20240229",  # ✅ Use Sonnet 3.5
+            model="claude-3.5-sonnet",  # ✅ Corrected model name
             max_tokens=1024,  # ✅ Set max tokens to 1024
             messages=[{"role": "user", "content": prompt}]
         )
@@ -64,6 +64,8 @@ def run_claude_verification():
     except anthropic.AuthenticationError as e:
         print(f"⚠️ Authentication Error: {e}")
         print("👉 Please check if your CLAUDE_API_KEY is correct.")
+    except anthropic.NotFoundError:
+        print("❌ Model not found. Ensure you are using the correct model name: 'claude-3.5-sonnet'.")
     except Exception as e:
         print(f"❌ Unexpected Error: {e}")
 
