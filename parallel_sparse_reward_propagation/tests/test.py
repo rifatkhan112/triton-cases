@@ -12,7 +12,6 @@ if __name__ == "__main__":
     B, S = 4, 4096
     discount = 0.99
 
-    # Generate random data
     rewards_naive = torch.randn((B, S), device='cuda', requires_grad=True)
     rewards_triton = rewards_naive.clone().detach().requires_grad_()
 
