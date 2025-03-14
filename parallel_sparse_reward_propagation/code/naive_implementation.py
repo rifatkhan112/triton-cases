@@ -1,16 +1,27 @@
 import torch
 
-def sparse_reward_propagation_naive_enhanced(rewards, reward_mask=None, discount=0.99):
+def improved_sparse_propagate(rewards: torch.Tensor, 
+                            dones: torch.Tensor, 
+                            gamma: float) -> torch.Tensor:
+    """
+    Combined batched implementation with done handling
+    Args:
+        rewards: Tensor of shape [B, S]
+        dones: Tensor of shape [B, S] (1s at episode ends)
+        gamma: Discount factor
+    Returns:
+        Tensor of shape [B, S] with propagated rewards
+    """
     B, S = rewards.shape
-    out = rewards.clone()
+    returns = torch.zeros_like(rewards)
     
-    # If no mask provided, assume all rewards are sparse (original behavior)
-    if reward_mask is None:
-        reward_mask = torch.ones_like(rewards, dtype=torch.bool)
+    # Start from terminal state
+    returns[:, -1] = rewards[:, -1]
     
-    for t in reversed(range(S - 1)):
-        # Only propagate non-sparse rewards (mask=False)
-        propagate = ~reward_mask[:, t]
-        out[propagate, t] = discount * out[propagate, t + 1]
+    # Backward pass with episode boundary awareness
+    for t in reversed(range(S-1)):
+        # Mask for active episodes
+        active = ~dones[:, t]
+        returns[:, t] = rewards[:, t] + gamma * returns[:, t+1] * active
         
-    return out
+    return returns
