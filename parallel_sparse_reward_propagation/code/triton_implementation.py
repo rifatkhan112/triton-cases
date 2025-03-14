@@ -3,49 +3,50 @@ import triton
 import triton.language as tl
 
 @triton.jit
-def reward_propagation_kernel(rewards_ptr, out_ptr, S, discount, BLOCK_SIZE: tl.constexpr):
-    batch_id = tl.program_id(0)
-    offset = batch_id * S
-    seq = tl.arange(0, BLOCK_SIZE)
+def sparse_reward_propagation_kernel(
+    rewards_ptr, out_ptr, S, discount, BLOCK_SIZE: tl.constexpr
+):
+    """
+    Fully parallel Triton kernel for sparse reward propagation in reinforcement learning.
+    - Each thread processes a block of time steps in reverse order.
+    - Uses warp-coalesced memory access for efficient reads/writes.
+    """
+    pid = tl.program_id(0)  # Get batch index
+    rewards_offset = pid * S  # Offset for batch processing
+    seq = tl.arange(0, BLOCK_SIZE)  # Define block indices
+
+    # Initialize the propagated reward to zero
     propagated_reward = tl.zeros([BLOCK_SIZE], dtype=tl.float32)
 
-    # Backward pass accumulation in parallel blocks
-    for t in range(S - BLOCK_SIZE, -1, -BLOCK_SIZE):
-        mask = (seq + t) < S
-        reward_block = tl.load(rewards + batch_id * S + seq + t, mask=mask, other=0.0)
-        propagated_reward = reward_block + discount * propagated_reward
-        tl.store(out_ptr + batch_id * S + seq + t, propagated_reward, mask=mask)
-
-@triton.jit
-def sparse_reward_propagation_kernel(rewards_ptr, out_ptr, S, discount, BLOCK_SIZE: tl.constexpr):
-    pid = tl.program_id(0)
-    rewards_offset = pid * S
-    seq = tl.arange(0, BLOCK_SIZE)
-
+    # Iterate backward through time in blocks
     for block_start in range(S - BLOCK_SIZE, -1, -BLOCK_SIZE):
         idx = rewards_offset + block_start + seq
-        mask = (block_start + seq) < S
-        rewards = tl.load(rewards_ptr + rewards_offset + block_start + seq, mask=mask, other=0.0)
+        mask = (block_start + seq) < S  # Ensure we stay in bounds
+
+        # Load rewards from memory
+        rewards = tl.load(rewards_ptr + idx, mask=mask, other=0.0)
 
         # Accumulate rewards backward within block
-        for i in reversed(range(BLOCK_SIZE - 1)):
-            rewards[i] += discount * rewards[i + 1]
+        propagated_reward = rewards + discount * propagated_reward
 
-        tl.store(out_ptr + rewards_offset + block_start, rewards, mask=mask)
+        # Store result back in global memory
+        tl.store(out_ptr + idx, propagated_reward, mask=mask)
 
 class TritonSparseRewardFunc(torch.autograd.Function):
     @staticmethod
     def forward(ctx, rewards, discount):
         B, S = rewards.shape
-        out = torch.zeros_like(rewards)
+        out = torch.zeros_like(rewards)  # Allocate output tensor
 
         BLOCK_SIZE = 256
-        grid = (rewards.shape[0],)
+        grid = (B,)  # One thread per batch
 
+        # Launch the Triton kernel
         sparse_reward_propagation_kernel[grid](
             rewards, out, S, discount, BLOCK_SIZE=BLOCK_SIZE
         )
 
+        # Save necessary tensors for backward pass
         ctx.save_for_backward(rewards, out)
         ctx.discount = discount
         return out
@@ -58,10 +59,14 @@ class TritonSparseRewardFunc(torch.autograd.Function):
         grad_rewards = grad_output.clone()
         S = grad_rewards.shape[1]
 
+        # Backward accumulation similar to naive implementation
         for t in range(S - 1):
             grad_rewards[:, t] += discount * grad_rewards[:, t + 1]
 
         return grad_rewards, None
 
 def sparse_reward_propagation_triton(rewards, discount=0.99):
+    """
+    Entry point for Triton-based sparse reward propagation.
+    """
     return TritonSparseRewardFunc.apply(rewards, discount)
