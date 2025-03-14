@@ -3,42 +3,49 @@ import triton
 import triton.language as tl
 
 @triton.jit
-def sparse_reward_propagation_kernel(
-    rewards_ptr, out_ptr,
-    B, S, discount: tl.constexpr,
+def single_step_backward_kernel(
+    out_ptr, S, t, discount,
     BLOCK_SIZE: tl.constexpr
 ):
     """
-    Parallel sparse reward propagation using warp-synchronous logic.
-    Each thread updates a single state while ensuring correctness.
+    Single-step backward accumulation:
+      out[:, t] = out[:, t] + discount * out[:, t+1]
+    Each block corresponds to one batch. Each thread corresponds to an element in that batch's row.
     """
-    batch_id = tl.program_id(0)  # Each block processes one batch
-    state_idx = tl.arange(0, BLOCK_SIZE)  # Parallel states
+    batch_id = tl.program_id(0)
+    offsets = tl.arange(0, BLOCK_SIZE)  # parallel offsets
+    idx = batch_id * S + offsets
+    mask = offsets < S  # valid threads
 
-    base_idx = batch_id * S  # Offset for batch in global memory
-    mask = state_idx < S  # Valid state indices
+    val_t = tl.load(out_ptr + idx + t, mask=mask & (t < S), other=0.0)
+    val_tplus1 = tl.load(out_ptr + idx + t + 1, mask=mask & (t+1 < S), other=0.0)
 
-    # Load rewards into shared memory
-    rewards = tl.load(rewards_ptr + base_idx + state_idx, mask=mask, other=0.0)
+    new_val_t = val_t + discount * val_tplus1
+    tl.store(out_ptr + idx + t, new_val_t, mask=mask & (t < S))
 
-    # Backward accumulation inside the kernel
-    for t in range(S - 2, -1, -1):  # Reverse order
-        prev_reward = tl.load(out_ptr + base_idx + t + 1, mask=t + 1 < S, other=0.0)
-        rewards = tl.where(state_idx == t, rewards + discount * prev_reward, rewards)
-        tl.store(out_ptr + base_idx + t, rewards, mask=mask)
 
 def sparse_reward_propagation_triton(rewards, discount=0.99):
     """
-    Single-kernel sparse reward propagation using Triton.
+    Multi-kernel approach:
+    for t in reversed(range(S-1)):
+      out[:, t] += discount * out[:, t+1]
+    Each iteration is a single-step backward operation executed in parallel by Triton.
     """
     B, S = rewards.shape
     out = rewards.clone()
+    out.copy_(rewards)
 
-    BLOCK_SIZE = min(1024, S)  # Choose block size adaptively
-    grid = (B,)  # One block per batch
+    BLOCK_SIZE = S  # or e.g., 1024 if B <= 1024, etc.
+    grid = (B,)
 
-    sparse_reward_propagation_kernel[grid](
-        rewards, out, B, S, discount, BLOCK_SIZE=BLOCK_SIZE
-    )
+    # We do S-1 calls to the kernel
+    for t in reversed(range(S - 1)):
+        single_step_backward_kernel[grid](
+            out,  # out_ptr
+            S,    # sequence length
+            t,    # single step index
+            discount,
+            BLOCK_SIZE=BLOCK_SIZE
+        )
 
     return out
