@@ -9,63 +9,42 @@ from parallel_sparse_reward_propagation.code.triton_implementation import sparse
 def test_forward():
     """Validate forward pass with various edge cases"""
     tests = [
-        # (rewards, dones, discount, expected)
+        # (rewards, dones, discount)
         # Test 0: Basic reward at beginning with terminal at end
         (
             [[1, 0, 0, 0], [0, 0, 0, 1]],
             [[0, 0, 0, 1], [0, 0, 0, 1]],
-            0.9,
-            [
-                [1, 0, 0, 0],  # Only the reward at position 0
-                [0, 0, 0, 1]   # Only the reward at the terminal state
-            ]
+            0.9
         ),
         # Test 1: Reward at second position with terminal after it
         (
             [[0, 2, 0, 0], [1, 0, 0, 0]],
             [[0, 1, 0, 0], [0, 0, 0, 1]],
-            0.8,
-            [
-                [0, 2, 0, 0],  # Reward at position 1 with a terminal after it
-                [1, 0, 0, 0]   # Reward at position 0 with terminal at end
-            ]
+            0.8
         ),
         # Test 2: Empty rewards
         (
             [[0, 0, 0, 0], [0, 0, 0, 0]],
             [[0, 0, 0, 0], [0, 0, 0, 0]],
-            0.95,
-            [
-                [0, 0, 0, 0],
-                [0, 0, 0, 0]
-            ]
+            0.95
         ),
         # Test 3: All terminal states
         (
             [[1, 2, 3, 4], [5, 6, 7, 8]],
             [[1, 1, 1, 1], [1, 1, 1, 1]],
-            0.9,
-            [
-                [1, 2, 3, 4],  # Each reward is isolated by terminals
-                [5, 6, 7, 8]
-            ]
+            0.9
         ),
         # Test 4: Multiple rewards without terminals
         (
             [[1, 0, 2, 0], [0, 3, 0, 4]],
             [[0, 0, 0, 0], [0, 0, 0, 0]],
-            0.9,
-            [
-                [1, 0, 2, 0],  # Rewards at positions 0 and 2
-                [0, 3, 0, 4]   # Rewards at positions 1 and 3
-            ]
+            0.9
         )
     ]
     
-    for i, (rewards, dones, discount, expected) in enumerate(tests):
+    for i, (rewards, dones, discount) in enumerate(tests):
         rewards = torch.tensor(rewards, device="cuda", dtype=torch.float32)
         dones = torch.tensor(dones, device="cuda", dtype=torch.float32)
-        expected_tensor = torch.tensor(expected, device="cuda", dtype=torch.float32)
         
         # Run both implementations
         naive_out = sparse_reward_propagation_naive(rewards, discount, dones)
@@ -74,47 +53,12 @@ def test_forward():
         # Print outputs for debugging
         print(f"Test {i}:")
         print(f"Inputs: rewards={rewards.cpu().numpy().tolist()}, dones={dones.cpu().numpy().tolist()}")
-        print(f"Expected: {expected_tensor.cpu().numpy().tolist()}")
         print(f"Naive output: {naive_out.cpu().numpy().tolist()}")
         print(f"Triton output: {triton_out.cpu().numpy().tolist()}")
         print("-------")
         
         # Check if implementations match each other
         assert torch.allclose(naive_out, triton_out, atol=1e-4), f"Test {i}: Implementations don't match"
-        
-        # Only check against expected if they match each other
-        # This helps us understand the actual behavior of your implementations
-        # We'll update our expectations based on the actual behavior
-
-
-def create_sample_for_analysis():
-    """Create a sample batch for detailed analysis"""
-    B, S = 2, 5
-    rewards = torch.zeros((B, S), device="cuda")
-    dones = torch.zeros((B, S), device="cuda")
-    
-    # Batch 0: Single reward at beginning, terminal at end
-    rewards[0, 0] = 1.0
-    dones[0, 4] = 1.0
-    
-    # Batch 1: Multiple rewards, one terminal in middle
-    rewards[1, 1] = 2.0
-    rewards[1, 3] = 3.0
-    dones[1, 2] = 1.0
-    
-    print("Sample input:")
-    print(f"Rewards:\n{rewards.cpu().numpy()}")
-    print(f"Dones:\n{dones.cpu().numpy()}")
-    
-    # Get outputs
-    naive_out = sparse_reward_propagation_naive(rewards, 0.9, dones)
-    triton_out = sparse_reward_propagation_triton(rewards, 0.9, dones)
-    
-    print("\nOutputs:")
-    print(f"Naive:\n{naive_out.cpu().numpy()}")
-    print(f"Triton:\n{triton_out.cpu().numpy()}")
-    
-    return rewards, dones, naive_out, triton_out
 
 
 def test_gradients():
@@ -122,14 +66,23 @@ def test_gradients():
     torch.manual_seed(42)
     B, S = 2, 4
     rewards = torch.randn(B, S, device="cuda", requires_grad=True)
+    rewards_triton = rewards.clone().requires_grad_(True)
     dones = torch.bernoulli(torch.full((B, S), 0.2, device="cuda"))
     
-    for impl in [sparse_reward_propagation_naive, sparse_reward_propagation_triton]:
-        rewards.grad = None
-        out = impl(rewards.clone(), 0.9, dones)
-        out.sum().backward()
-        assert rewards.grad is not None, "Gradients not calculated"
-        assert not torch.isnan(rewards.grad).any(), "NaN in gradients"
+    # Test naive implementation
+    out_naive = sparse_reward_propagation_naive(rewards, 0.9, dones)
+    out_naive.sum().backward()
+    assert rewards.grad is not None, "Naive: Gradients not calculated"
+    assert not torch.isnan(rewards.grad).any(), "Naive: NaN in gradients"
+    
+    # Test triton implementation
+    out_triton = sparse_reward_propagation_triton(rewards_triton, 0.9, dones)
+    out_triton.sum().backward()
+    assert rewards_triton.grad is not None, "Triton: Gradients not calculated"
+    assert not torch.isnan(rewards_triton.grad).any(), "Triton: NaN in gradients"
+    
+    # Compare gradients
+    assert torch.allclose(rewards.grad, rewards_triton.grad, atol=1e-4), "Gradient mismatch between implementations"
 
 
 def test_none_dones():
@@ -150,6 +103,9 @@ def test_none_dones():
     )
     triton_without_dones = sparse_reward_propagation_triton(rewards, 0.9, None)
     assert torch.allclose(triton_with_dones, triton_without_dones), "Triton: None dones handling failed"
+    
+    # Compare implementations
+    assert torch.allclose(naive_with_dones, triton_with_dones), "Implementations mismatch with zero dones"
 
 
 def test_performance(verbose=True):
@@ -226,10 +182,7 @@ def test_performance(verbose=True):
 
 
 if __name__ == "__main__":
-    print("Creating sample for analysis...")
-    create_sample_for_analysis()
-    
-    print("\nRunning modified forward tests...")
+    print("Running forward tests...")
     test_forward()
     
     print("\nRunning gradient tests...")
