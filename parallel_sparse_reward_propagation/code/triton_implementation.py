@@ -13,6 +13,7 @@ def sparse_reward_propagate_kernel(
     """
     Triton kernel for efficient sparse reward propagation.
     Each thread processes a single (batch, sequence) element.
+    Avoids using break statements which are not supported in Triton.
     
     Args:
         rewards_ptr, dones_ptr, output_ptr: Pointers to input/output tensors
@@ -40,14 +41,22 @@ def sparse_reward_propagate_kernel(
         done = tl.load(dones_ptr + done_offset)
         
         # Only process if this position has a non-zero reward or is a terminal state
-        if (reward != 0.0) | (done != 0):
+        is_active = (reward != 0.0) | (done != 0)
+        
+        if is_active:
             # Find trajectory start (earliest position after a done flag)
+            # Using a mask-based approach instead of break
             trajectory_start = 0
+            found_done = False
+            
+            # Loop through previous positions to find the last done flag
             for t in range(s - 1, -1, -1):
                 prev_done = tl.load(dones_ptr + b * dones_stride_b + t * dones_stride_s)
-                if prev_done != 0:
-                    trajectory_start = t + 1
-                    break
+                # Update trajectory start if we find a done flag and haven't found one yet
+                update_start = (prev_done != 0) & (~found_done)
+                trajectory_start = tl.where(update_start, t + 1, trajectory_start)
+                # Mark that we've found a done flag
+                found_done = found_done | (prev_done != 0)
             
             # Handle terminal state differently
             if done != 0:
@@ -59,9 +68,13 @@ def sparse_reward_propagate_kernel(
                 tl.atomic_add(output_ptr + reward_offset, cumulative)
                 
                 # Propagate through trajectory with exponential decay
-                for t in range(s - 1, trajectory_start - 1, -1):
-                    cumulative *= discount
-                    tl.atomic_add(output_ptr + b * rewards_stride_b + t * rewards_stride_s, cumulative)
+                for t in range(s - 1, -1, -1):
+                    # Only process steps that are part of the current trajectory
+                    # (after the last done flag)
+                    is_valid_step = t >= trajectory_start
+                    if is_valid_step:
+                        cumulative *= discount
+                        tl.atomic_add(output_ptr + b * rewards_stride_b + t * rewards_stride_s, cumulative)
 
 
 def sparse_reward_propagation_triton(
