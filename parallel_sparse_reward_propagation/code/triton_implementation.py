@@ -13,7 +13,7 @@ def process_batch_kernel(
     Process a single batch to compute returns.
     Each kernel instance handles one batch.
     
-    This implementation exactly matches the naive implementation behavior.
+    This implementation avoids all unsupported control flow statements.
     """
     # Get batch index from program ID
     b = tl.program_id(0)
@@ -37,17 +37,13 @@ def process_batch_kernel(
         reward = tl.load(rewards_ptr + reward_offset)
         done = tl.load(dones_ptr + done_offset)
         
-        # Initialize variables for trajectory tracking
-        last_done_pos = -1
+        # If reward is non-zero and not terminal, process this position
+        should_process = (reward != 0.0) & (done == 0)
         
-        # If reward is zero and not terminal, skip this position
-        should_process = (reward != 0.0) | (done != 0)
-        if ~should_process:
-            continue
-            
-        # Only non-terminals propagate backward
-        if done == 0:
+        # Only non-terminals with non-zero rewards propagate backward
+        if should_process:
             # Find position of last done flag (trajectory start)
+            last_done_pos = -1
             for t in range(s-1, -1, -1):
                 t_done_offset = b * dones_stride_b + t * dones_stride_s
                 t_done = tl.load(dones_ptr + t_done_offset)
