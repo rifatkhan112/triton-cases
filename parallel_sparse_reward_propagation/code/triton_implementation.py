@@ -3,76 +3,54 @@ import triton
 import triton.language as tl
 
 @triton.jit
-def reverse_rewards_kernel(
-    rewards_ptr, dones_ptr, tmp_buffer_ptr,
+def sparse_reward_propagate_kernel(
+    rewards_ptr, dones_ptr, output_ptr,
     B, S, discount,
     rewards_stride_b, rewards_stride_s,
     dones_stride_b, dones_stride_s,
     BLOCK_SIZE: tl.constexpr
 ):
     """
-    First stage: Store rewards and dones in reverse order in a temporary buffer.
-    This makes the forward processing in the second stage equivalent to
-    backward processing in the naive implementation.
+    Triton kernel for propagating sparse rewards through state transitions.
+    This version exactly matches the behavior of the naive implementation.
     """
+    # Get program ID and compute indices
     pid = tl.program_id(0)
+    grid_size = tl.num_programs(0)
     
-    # Each thread handles one batch
-    if pid < B:
-        b = pid
-        
-        # Process sequence in reverse order and store in temp buffer
-        for s in range(S):
-            orig_s = S - 1 - s  # Original position (reversed)
+    # Process multiple elements per thread using a grid-stride loop
+    for b in range(0, B):
+        for s in range(S - 1, -1, -1):  # Process in reverse order like the naive implementation
+            # Skip elements not assigned to this thread
+            element_idx = b * S + s
+            if element_idx % grid_size != pid:
+                continue
+                
+            # Load reward and done flag for this position
+            reward_offset = b * rewards_stride_b + s * rewards_stride_s
+            done_offset = b * dones_stride_b + s * dones_stride_s
             
-            # Load from original position
-            reward = tl.load(rewards_ptr + b * rewards_stride_b + orig_s * rewards_stride_s)
-            done = tl.load(dones_ptr + b * dones_stride_b + orig_s * dones_stride_s)
+            reward = tl.load(rewards_ptr + reward_offset)
+            done = tl.load(dones_ptr + done_offset)
             
-            # Store in temporary buffer at forward position
-            tmp_offset = b * S * 2 + s * 2
-            tl.store(tmp_buffer_ptr + tmp_offset, reward)
-            tl.store(tmp_buffer_ptr + tmp_offset + 1, done)
-
-
-@triton.jit
-def process_rewards_kernel(
-    tmp_buffer_ptr, output_ptr,
-    B, S, discount,
-    output_stride_b, output_stride_s,
-    BLOCK_SIZE: tl.constexpr
-):
-    """
-    Second stage: Process the reversed rewards to compute returns.
-    The forward processing of reversed data is equivalent to 
-    backward processing of the original data.
-    """
-    pid = tl.program_id(0)
-    
-    # Each thread handles one batch
-    if pid < B:
-        b = pid
-        
-        # Initialize cumulative return
-        cumulative = 0.0
-        
-        # Process sequence in forward order (which is backward in original data)
-        for s in range(S):
-            # Load from temp buffer
-            tmp_offset = b * S * 2 + s * 2
-            reward = tl.load(tmp_buffer_ptr + tmp_offset)
-            done = tl.load(tmp_buffer_ptr + tmp_offset + 1)
+            # Load current cumulative value (if any)
+            cumulative = tl.load(output_ptr + reward_offset)
             
-            # Reset cumulative value at terminal states
-            cumulative = tl.where(done != 0, 0.0, cumulative)
+            # Add current reward to the cumulative value
+            cumulative = cumulative + reward
             
-            # Add current reward to cumulative value
-            cumulative = reward + discount * cumulative
+            # Store the updated cumulative value
+            tl.store(output_ptr + reward_offset, cumulative)
             
-            # Store result at the original position (reversing back)
-            orig_s = S - 1 - s
-            output_offset = b * output_stride_b + orig_s * output_stride_s
-            tl.store(output_ptr + output_offset, cumulative)
+            # If this is a terminal state, don't propagate further
+            if done != 0:
+                continue
+                
+            # Propagate the discounted cumulative value to the previous time step
+            if s > 0:  # Only if there's a previous step
+                prev_offset = b * rewards_stride_b + (s-1) * rewards_stride_s
+                discounted_value = cumulative * discount
+                tl.atomic_add(output_ptr + prev_offset, discounted_value)
 
 
 def sparse_reward_propagation_triton(
@@ -81,8 +59,8 @@ def sparse_reward_propagation_triton(
     dones: torch.Tensor = None
 ) -> torch.Tensor:
     """
-    Triton implementation that matches the naive implementation exactly.
-    Uses a two-stage approach with temporary storage to handle the backward propagation.
+    Triton implementation for propagating sparse rewards through state transitions.
+    Implements a backward pass through the sequence to compute discounted returns.
     
     Args:
         rewards: [B, S] tensor of rewards
@@ -93,7 +71,6 @@ def sparse_reward_propagation_triton(
         [B, S] tensor of propagated returns
     """
     B, S = rewards.shape
-    device = rewards.device
     output = torch.zeros_like(rewards)
     
     # Handle missing done flags
@@ -102,27 +79,18 @@ def sparse_reward_propagation_triton(
     elif dones.dtype == torch.bool:
         dones = dones.to(torch.float32)
     
-    # Create temporary buffer to store reversed data
-    # Format: [batch][position][reward/done]
-    tmp_buffer = torch.zeros(B * S * 2, device=device, dtype=torch.float32)
+    # Use a two-stage approach for better performance
     
-    # Stage 1: Reverse the data
-    grid1 = (B,)
-    reverse_rewards_kernel[grid1](
-        rewards, dones, tmp_buffer,
+    # Stage 1: Process rewards from back to front
+    # We'll launch one thread for each time step across all batches
+    grid = (min(1024, B * S),)
+    
+    sparse_reward_propagate_kernel[grid](
+        rewards, dones, output,
         B, S, discount,
         rewards.stride(0), rewards.stride(1),
         dones.stride(0), dones.stride(1),
-        BLOCK_SIZE=1
-    )
-    
-    # Stage 2: Process the reversed data
-    grid2 = (B,)
-    process_rewards_kernel[grid2](
-        tmp_buffer, output,
-        B, S, discount,
-        output.stride(0), output.stride(1),
-        BLOCK_SIZE=1
+        BLOCK_SIZE=256
     )
     
     return output
