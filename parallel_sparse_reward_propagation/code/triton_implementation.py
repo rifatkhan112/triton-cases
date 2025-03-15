@@ -3,78 +3,76 @@ import triton
 import triton.language as tl
 
 @triton.jit
-def sparse_reward_propagate_kernel(
-    rewards_ptr, dones_ptr, output_ptr,
+def reverse_rewards_kernel(
+    rewards_ptr, dones_ptr, tmp_buffer_ptr,
     B, S, discount,
     rewards_stride_b, rewards_stride_s,
     dones_stride_b, dones_stride_s,
     BLOCK_SIZE: tl.constexpr
 ):
     """
-    Triton kernel for efficient sparse reward propagation.
-    Each thread processes a single (batch, sequence) element.
-    Avoids using break statements which are not supported in Triton.
-    
-    Args:
-        rewards_ptr, dones_ptr, output_ptr: Pointers to input/output tensors
-        B, S: Batch size and sequence length
-        discount: Discount factor
-        rewards_stride_b, rewards_stride_s: Strides for reward tensor
-        dones_stride_b, dones_stride_s: Strides for done tensor
-        BLOCK_SIZE: Size of the block for parallel processing
+    First stage: Store rewards and dones in reverse order in a temporary buffer.
+    This makes the forward processing in the second stage equivalent to
+    backward processing in the naive implementation.
     """
-    # Get program ID and compute indices
     pid = tl.program_id(0)
-    grid_size = tl.num_programs(0)
     
-    # Process multiple elements per thread using a grid-stride loop
-    for idx in range(pid, B * S, grid_size):
-        # Convert linear index to batch and sequence indices
-        b = idx // S
-        s = idx % S
+    # Each thread handles one batch
+    if pid < B:
+        b = pid
         
-        # Load reward and done flag for this position
-        reward_offset = b * rewards_stride_b + s * rewards_stride_s
-        done_offset = b * dones_stride_b + s * dones_stride_s
-        
-        reward = tl.load(rewards_ptr + reward_offset)
-        done = tl.load(dones_ptr + done_offset)
-        
-        # Only process if this position has a non-zero reward or is a terminal state
-        is_active = (reward != 0.0) | (done != 0)
-        
-        if is_active:
-            # Find trajectory start (earliest position after a done flag)
-            # Using a mask-based approach instead of break
-            trajectory_start = 0
-            found_done = False
+        # Process sequence in reverse order and store in temp buffer
+        for s in range(S):
+            orig_s = S - 1 - s  # Original position (reversed)
             
-            # Loop through previous positions to find the last done flag
-            for t in range(s - 1, -1, -1):
-                prev_done = tl.load(dones_ptr + b * dones_stride_b + t * dones_stride_s)
-                # Update trajectory start if we find a done flag and haven't found one yet
-                update_start = (prev_done != 0) & (~found_done)
-                trajectory_start = tl.where(update_start, t + 1, trajectory_start)
-                # Mark that we've found a done flag
-                found_done = found_done | (prev_done != 0)
+            # Load from original position
+            reward = tl.load(rewards_ptr + b * rewards_stride_b + orig_s * rewards_stride_s)
+            done = tl.load(dones_ptr + b * dones_stride_b + orig_s * dones_stride_s)
             
-            # Handle terminal state differently
-            if done != 0:
-                # For terminal states, just add the reward to the current position
-                tl.atomic_add(output_ptr + reward_offset, reward)
-            else:
-                # For non-terminal rewards, propagate backward
-                cumulative = reward
-                tl.atomic_add(output_ptr + reward_offset, cumulative)
-                
-                # Propagate through trajectory with exponential decay
-                for t in range(s - 1, -1, -1):
-                    # Only process steps that are part of the current trajectory
-                    # (after the last done flag)
-                    is_valid_step = t >= trajectory_start
-                    if is_valid_step:
-                        cumulative *= discount
-                        tl.atomic_add(output_ptr + b * rewards_stride_b + t * rewards_stride_s, cumulative)
+            # Store in temporary buffer at forward position
+            tmp_offset = b * S * 2 + s * 2
+            tl.store(tmp_buffer_ptr + tmp_offset, reward)
+            tl.store(tmp_buffer_ptr + tmp_offset + 1, done)
+
+
+@triton.jit
+def process_rewards_kernel(
+    tmp_buffer_ptr, output_ptr,
+    B, S, discount,
+    output_stride_b, output_stride_s,
+    BLOCK_SIZE: tl.constexpr
+):
+    """
+    Second stage: Process the reversed rewards to compute returns.
+    The forward processing of reversed data is equivalent to 
+    backward processing of the original data.
+    """
+    pid = tl.program_id(0)
+    
+    # Each thread handles one batch
+    if pid < B:
+        b = pid
+        
+        # Initialize cumulative return
+        cumulative = 0.0
+        
+        # Process sequence in forward order (which is backward in original data)
+        for s in range(S):
+            # Load from temp buffer
+            tmp_offset = b * S * 2 + s * 2
+            reward = tl.load(tmp_buffer_ptr + tmp_offset)
+            done = tl.load(tmp_buffer_ptr + tmp_offset + 1)
+            
+            # Reset cumulative value at terminal states
+            cumulative = tl.where(done != 0, 0.0, cumulative)
+            
+            # Add current reward to cumulative value
+            cumulative = reward + discount * cumulative
+            
+            # Store result at the original position (reversing back)
+            orig_s = S - 1 - s
+            output_offset = b * output_stride_b + orig_s * output_stride_s
+            tl.store(output_ptr + output_offset, cumulative)
 
 
 def sparse_reward_propagation_triton(
@@ -83,8 +81,8 @@ def sparse_reward_propagation_triton(
     dones: torch.Tensor = None
 ) -> torch.Tensor:
     """
-    Triton implementation for propagating sparse rewards through state transitions.
-    Only processes elements with non-zero rewards or terminal states.
+    Triton implementation that matches the naive implementation exactly.
+    Uses a two-stage approach with temporary storage to handle the backward propagation.
     
     Args:
         rewards: [B, S] tensor of rewards
@@ -95,6 +93,7 @@ def sparse_reward_propagation_triton(
         [B, S] tensor of propagated returns
     """
     B, S = rewards.shape
+    device = rewards.device
     output = torch.zeros_like(rewards)
     
     # Handle missing done flags
@@ -103,16 +102,27 @@ def sparse_reward_propagation_triton(
     elif dones.dtype == torch.bool:
         dones = dones.to(torch.float32)
     
-    # Grid size tuned for good occupancy
-    grid = (triton.cdiv(B * S, 256),)
+    # Create temporary buffer to store reversed data
+    # Format: [batch][position][reward/done]
+    tmp_buffer = torch.zeros(B * S * 2, device=device, dtype=torch.float32)
     
-    # Launch kernel
-    sparse_reward_propagate_kernel[grid](
-        rewards, dones, output,
+    # Stage 1: Reverse the data
+    grid1 = (B,)
+    reverse_rewards_kernel[grid1](
+        rewards, dones, tmp_buffer,
         B, S, discount,
         rewards.stride(0), rewards.stride(1),
         dones.stride(0), dones.stride(1),
-        BLOCK_SIZE=256
+        BLOCK_SIZE=1
+    )
+    
+    # Stage 2: Process the reversed data
+    grid2 = (B,)
+    process_rewards_kernel[grid2](
+        tmp_buffer, output,
+        B, S, discount,
+        output.stride(0), output.stride(1),
+        BLOCK_SIZE=1
     )
     
     return output
