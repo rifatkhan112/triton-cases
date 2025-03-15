@@ -22,42 +22,53 @@ def process_batch_kernel(
     if b >= B:
         return
     
-    # Initialize values
+    # First copy all rewards to the output
     for s in range(S):
-        # Set initial values to original rewards
         reward_offset = b * rewards_stride_b + s * rewards_stride_s
         reward = tl.load(rewards_ptr + reward_offset)
         tl.store(output_ptr + reward_offset, reward)
     
-    # Process each position with non-zero reward or terminal
-    for s in range(S):
-        # Load reward and done flag
+    # Find active positions (non-zero rewards or terminals)
+    # For each active position, propagate reward backward
+    for s in range(S-1, -1, -1):
         reward_offset = b * rewards_stride_b + s * rewards_stride_s
         done_offset = b * dones_stride_b + s * dones_stride_s
         
         reward = tl.load(rewards_ptr + reward_offset)
         done = tl.load(dones_ptr + done_offset)
         
-        # Skip processing if this is a terminal state
-        is_terminal = done != 0
+        # Initialize variables for trajectory tracking
+        last_done_pos = -1
         
-        # Only process non-terminal states with non-zero rewards
-        if (reward != 0.0) & (~is_terminal):
-            # Find trajectory start
-            start = 0
+        # If reward is zero and not terminal, skip this position
+        should_process = (reward != 0.0) | (done != 0)
+        if ~should_process:
+            continue
+            
+        # Only non-terminals propagate backward
+        if done == 0:
+            # Find position of last done flag (trajectory start)
             for t in range(s-1, -1, -1):
-                # Check for done flag
-                t_done = tl.load(dones_ptr + b * dones_stride_b + t * dones_stride_s)
-                start = tl.where(t_done != 0, t+1, start)
+                t_done_offset = b * dones_stride_b + t * dones_stride_s
+                t_done = tl.load(dones_ptr + t_done_offset)
+                if t_done != 0:
+                    last_done_pos = t
+                    break
             
             # Propagate reward backward through trajectory
             cumulative = reward
             
-            # Propagate through trajectory with exponential decay
-            for t in range(s-1, start-1, -1):
+            for t in range(s-1, -1, -1):
+                # Stop at done flag
+                if t <= last_done_pos:
+                    break
+                
+                # Propagate with discount
                 cumulative *= discount
                 t_offset = b * rewards_stride_b + t * rewards_stride_s
-                tl.atomic_add(output_ptr + t_offset, cumulative)
+                # Add to the output (may already have a value from another reward)
+                current = tl.load(output_ptr + t_offset)
+                tl.store(output_ptr + t_offset, current + cumulative)
 
 
 def sparse_reward_propagation_triton(
@@ -66,8 +77,7 @@ def sparse_reward_propagation_triton(
     dones: torch.Tensor = None
 ) -> torch.Tensor:
     """
-    Triton implementation that exactly matches the naive implementation.
-    Each batch is processed by a dedicated thread.
+    Triton implementation that matches the naive implementation exactly.
     
     Args:
         rewards: [B, S] tensor of rewards
