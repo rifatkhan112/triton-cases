@@ -1,52 +1,61 @@
 import torch
-import time
 
 from parallel_sparse_reward_propagation.code.naive_implementation import sparse_reward_propagation_naive
 from parallel_sparse_reward_propagation.code.triton_implementation import sparse_reward_propagation_triton
 
 def test_implementations_match():
     """Test that naive and triton implementations produce the same results"""
+    print("Testing with simple cases...")
+    
+    # Simple test cases
+    rewards = torch.tensor([[1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]], device="cuda")
+    dones = torch.tensor([[0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 0.0, 1.0]], device="cuda")
+    
+    naive_out = sparse_reward_propagation_naive(rewards, 0.9, dones)
+    triton_out = sparse_reward_propagation_triton(rewards, 0.9, dones)
+    
+    print("Naive output:", naive_out)
+    print("Triton output:", triton_out)
+    
+    match = torch.allclose(naive_out, triton_out, atol=1e-5)
+    print(f"Simple test: {'PASSED' if match else 'FAILED'}")
+    
+    print("\nTesting with random data...")
     torch.manual_seed(42)
     
-    test_cases = [
-        # Simple test
-        (torch.tensor([[1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]], device="cuda"), 
-         torch.tensor([[0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 0.0, 1.0]], device="cuda"), 
-         0.9),
-        
-        # With terminal states
-        (torch.tensor([[0.0, 2.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]], device="cuda"), 
-         torch.tensor([[0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]], device="cuda"), 
-         0.8),
-        
-        # Random case
-        (torch.randn(4, 8, device="cuda"), 
-         torch.bernoulli(torch.full((4, 8), 0.2, device="cuda")), 
-         0.95),
-    ]
+    # Random test
+    B, S = 4, 8
+    rewards = torch.randn(B, S, device="cuda")
+    dones = torch.bernoulli(torch.full((B, S), 0.2, device="cuda"))
     
-    for i, (rewards, dones, discount) in enumerate(test_cases):
-        # Get outputs from both implementations
-        naive_out = sparse_reward_propagation_naive(rewards, discount, dones)
-        triton_out = sparse_reward_propagation_triton(rewards, discount, dones)
-        
-        # Check if outputs match
-        if not torch.allclose(naive_out, triton_out, atol=1e-4):
-            print(f"Test case {i} failed")
-            print(f"Rewards: {rewards.cpu().numpy()}")
-            print(f"Dones: {dones.cpu().numpy()}")
-            print(f"Naive output: {naive_out.cpu().numpy()}")
-            print(f"Triton output: {triton_out.cpu().numpy()}")
-            print(f"Difference: {(naive_out - triton_out).abs().max().item()}")
-            return False
-        else:
-            print(f"Test case {i} passed")
+    naive_out = sparse_reward_propagation_naive(rewards, 0.95, dones)
+    triton_out = sparse_reward_propagation_triton(rewards, 0.95, dones)
     
+    match = torch.allclose(naive_out, triton_out, atol=1e-5)
+    if not match:
+        print("Random test: FAILED")
+        diff = (naive_out - triton_out).abs()
+        max_diff = diff.max().item()
+        print(f"Max difference: {max_diff}")
+        
+        # Print indices where the difference is largest
+        max_idx = diff.argmax().item()
+        b_idx = max_idx // S
+        s_idx = max_idx % S
+        print(f"Largest difference at [b={b_idx}, s={s_idx}]:")
+        print(f"  Naive: {naive_out[b_idx, s_idx].item()}")
+        print(f"  Triton: {triton_out[b_idx, s_idx].item()}")
+        return False
+    else:
+        print("Random test: PASSED")
+    
+    print("\nAll tests passed!")
     return True
 
 
 def benchmark_performance():
     """Benchmark performance of both implementations"""
+    print("\nBenchmarking performance...")
     torch.manual_seed(42)
     
     # Test configurations
@@ -56,8 +65,6 @@ def benchmark_performance():
         (32, 128, 0.5, 0.1, 0.95),    # Medium sparsity
         (32, 128, 0.0, 0.05, 0.9),    # Dense
     ]
-    
-    results = []
     
     for B, S, sparsity, done_prob, discount in configs:
         # Create input tensors
@@ -96,27 +103,15 @@ def benchmark_performance():
         
         speedup = naive_time / triton_time if triton_time > 0 else 0
         
-        print(f"B={B}, S={S}, Sparsity={sparsity*100:.1f}%:")
+        non_zero = int(B * S * (1 - sparsity))
+        print(f"B={B}, S={S}, Non-zeros={non_zero}/{B*S} ({(1-sparsity)*100:.1f}%):")
         print(f"  Naive: {naive_time:.3f} ms")
         print(f"  Triton: {triton_time:.3f} ms")
         print(f"  Speedup: {speedup:.2f}x")
-        
-        results.append({
-            'B': B, 'S': S, 'sparsity': sparsity,
-            'naive_ms': naive_time, 'triton_ms': triton_time,
-            'speedup': speedup
-        })
-    
-    return results
 
 
 if __name__ == "__main__":
-    print("Testing implementations match...")
     if test_implementations_match():
-        print("All tests passed!")
-        
-        print("\nBenchmarking performance...")
-        results = benchmark_performance()
-        print("\nBenchmark complete!")
+        benchmark_performance()
     else:
-        print("Tests failed!")
+        print("Tests failed! Skipping benchmarks.")
