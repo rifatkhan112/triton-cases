@@ -1,6 +1,6 @@
 import torch
 
-def naive_sparse_reward_propagation(
+def sparse_reward_propagation_naive(
     rewards: torch.Tensor,
     discount: float = 0.99,
     dones: torch.Tensor = None
