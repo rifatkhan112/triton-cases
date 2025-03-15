@@ -13,7 +13,7 @@ def process_batch_kernel(
     Process a single batch to compute returns.
     Each kernel instance handles one batch.
     
-    This implementation avoids break and continue statements.
+    This implementation exactly matches the naive implementation behavior.
     """
     # Get batch index from program ID
     b = tl.program_id(0)
@@ -21,12 +21,16 @@ def process_batch_kernel(
     # Skip if batch index is out of bounds
     if b >= B:
         return
-        
-    # Initialize cumulative return
-    cumulative = 0.0
     
-    # Process sequence in reverse order (from end to beginning)
-    for s in range(S-1, -1, -1):
+    # Initialize values
+    for s in range(S):
+        # Set initial values to original rewards
+        reward_offset = b * rewards_stride_b + s * rewards_stride_s
+        reward = tl.load(rewards_ptr + reward_offset)
+        tl.store(output_ptr + reward_offset, reward)
+    
+    # Process each position with non-zero reward or terminal
+    for s in range(S):
         # Load reward and done flag
         reward_offset = b * rewards_stride_b + s * rewards_stride_s
         done_offset = b * dones_stride_b + s * dones_stride_s
@@ -34,14 +38,26 @@ def process_batch_kernel(
         reward = tl.load(rewards_ptr + reward_offset)
         done = tl.load(dones_ptr + done_offset)
         
-        # Reset cumulative value if this is a terminal state
-        cumulative = tl.where(done != 0, 0.0, cumulative)
+        # Skip processing if this is a terminal state
+        is_terminal = done != 0
         
-        # Add current reward to cumulative value
-        cumulative = reward + discount * cumulative
-        
-        # Store result
-        tl.store(output_ptr + reward_offset, cumulative)
+        # Only process non-terminal states with non-zero rewards
+        if (reward != 0.0) & (~is_terminal):
+            # Find trajectory start
+            start = 0
+            for t in range(s-1, -1, -1):
+                # Check for done flag
+                t_done = tl.load(dones_ptr + b * dones_stride_b + t * dones_stride_s)
+                start = tl.where(t_done != 0, t+1, start)
+            
+            # Propagate reward backward through trajectory
+            cumulative = reward
+            
+            # Propagate through trajectory with exponential decay
+            for t in range(s-1, start-1, -1):
+                cumulative *= discount
+                t_offset = b * rewards_stride_b + t * rewards_stride_s
+                tl.atomic_add(output_ptr + t_offset, cumulative)
 
 
 def sparse_reward_propagation_triton(
@@ -50,9 +66,8 @@ def sparse_reward_propagation_triton(
     dones: torch.Tensor = None
 ) -> torch.Tensor:
     """
-    Triton implementation that matches the naive implementation exactly.
-    Each batch is processed by a dedicated thread to match the batch-wise
-    processing of the naive implementation.
+    Triton implementation that exactly matches the naive implementation.
+    Each batch is processed by a dedicated thread.
     
     Args:
         rewards: [B, S] tensor of rewards
