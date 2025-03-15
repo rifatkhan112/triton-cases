@@ -3,54 +3,45 @@ import triton
 import triton.language as tl
 
 @triton.jit
-def sparse_reward_propagate_kernel(
+def process_batch_kernel(
     rewards_ptr, dones_ptr, output_ptr,
     B, S, discount,
     rewards_stride_b, rewards_stride_s,
-    dones_stride_b, dones_stride_s,
-    BLOCK_SIZE: tl.constexpr
+    dones_stride_b, dones_stride_s
 ):
     """
-    Triton kernel for propagating sparse rewards through state transitions.
-    This version exactly matches the behavior of the naive implementation.
-    """
-    # Get program ID and compute indices
-    pid = tl.program_id(0)
-    grid_size = tl.num_programs(0)
+    Process a single batch to compute returns.
+    Each kernel instance handles one batch.
     
-    # Process multiple elements per thread using a grid-stride loop
-    for b in range(0, B):
-        for s in range(S - 1, -1, -1):  # Process in reverse order like the naive implementation
-            # Skip elements not assigned to this thread
-            element_idx = b * S + s
-            if element_idx % grid_size != pid:
-                continue
-                
-            # Load reward and done flag for this position
-            reward_offset = b * rewards_stride_b + s * rewards_stride_s
-            done_offset = b * dones_stride_b + s * dones_stride_s
-            
-            reward = tl.load(rewards_ptr + reward_offset)
-            done = tl.load(dones_ptr + done_offset)
-            
-            # Load current cumulative value (if any)
-            cumulative = tl.load(output_ptr + reward_offset)
-            
-            # Add current reward to the cumulative value
-            cumulative = cumulative + reward
-            
-            # Store the updated cumulative value
-            tl.store(output_ptr + reward_offset, cumulative)
-            
-            # If this is a terminal state, don't propagate further
-            if done != 0:
-                continue
-                
-            # Propagate the discounted cumulative value to the previous time step
-            if s > 0:  # Only if there's a previous step
-                prev_offset = b * rewards_stride_b + (s-1) * rewards_stride_s
-                discounted_value = cumulative * discount
-                tl.atomic_add(output_ptr + prev_offset, discounted_value)
+    This implementation avoids break and continue statements.
+    """
+    # Get batch index from program ID
+    b = tl.program_id(0)
+    
+    # Skip if batch index is out of bounds
+    if b >= B:
+        return
+        
+    # Initialize cumulative return
+    cumulative = 0.0
+    
+    # Process sequence in reverse order (from end to beginning)
+    for s in range(S-1, -1, -1):
+        # Load reward and done flag
+        reward_offset = b * rewards_stride_b + s * rewards_stride_s
+        done_offset = b * dones_stride_b + s * dones_stride_s
+        
+        reward = tl.load(rewards_ptr + reward_offset)
+        done = tl.load(dones_ptr + done_offset)
+        
+        # Reset cumulative value if this is a terminal state
+        cumulative = tl.where(done != 0, 0.0, cumulative)
+        
+        # Add current reward to cumulative value
+        cumulative = reward + discount * cumulative
+        
+        # Store result
+        tl.store(output_ptr + reward_offset, cumulative)
 
 
 def sparse_reward_propagation_triton(
@@ -59,8 +50,9 @@ def sparse_reward_propagation_triton(
     dones: torch.Tensor = None
 ) -> torch.Tensor:
     """
-    Triton implementation for propagating sparse rewards through state transitions.
-    Implements a backward pass through the sequence to compute discounted returns.
+    Triton implementation that matches the naive implementation exactly.
+    Each batch is processed by a dedicated thread to match the batch-wise
+    processing of the naive implementation.
     
     Args:
         rewards: [B, S] tensor of rewards
@@ -79,18 +71,14 @@ def sparse_reward_propagation_triton(
     elif dones.dtype == torch.bool:
         dones = dones.to(torch.float32)
     
-    # Use a two-stage approach for better performance
+    # Launch one kernel per batch
+    grid = (B,)
     
-    # Stage 1: Process rewards from back to front
-    # We'll launch one thread for each time step across all batches
-    grid = (min(1024, B * S),)
-    
-    sparse_reward_propagate_kernel[grid](
+    process_batch_kernel[grid](
         rewards, dones, output,
         B, S, discount,
         rewards.stride(0), rewards.stride(1),
-        dones.stride(0), dones.stride(1),
-        BLOCK_SIZE=256
+        dones.stride(0), dones.stride(1)
     )
     
     return output
