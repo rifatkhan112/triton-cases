@@ -1,0 +1,14 @@
+import numpy as np
+
+def naive_softmax(x, t):
+  """
+  Computes the softmax function for a given input array.
+
+  Args:
+    x: A NumPy array of raw scores (logits).
+
+  Returns:
+    A NumPy array of probabilities.
+  """
+  exp_x = np.exp(x / t - np.max(x) / t) # Subtract max for numerical stability
+  return exp_x / np.sum(exp_x, axis=0)
