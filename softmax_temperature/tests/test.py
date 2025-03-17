@@ -5,7 +5,7 @@ from softmax_temperature.code.naive_implementation import naive_softmax
 from softmax_temperature.code.triton_implementation import triton_softmax
 from triton.runtime import driver
 
-DEVICE = triton.runtime.driver.active.get_active_torch_device()
+DEVICE = torch.device(f'cuda:{torch.cuda.current_device()}')
 
 torch.manual_seed(0)
 x = torch.randn(1823, 781, device=DEVICE)
