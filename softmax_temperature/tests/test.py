@@ -1,6 +1,6 @@
 import torch
 
-from softmax_temperature.tests.test import softmax
+from softmax_temperature.code.triton_implementation import softmax
 
 torch.manual_seed(0)
 x = torch.randn(1823, 781, device=DEVICE)
