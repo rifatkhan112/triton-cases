@@ -1,6 +1,5 @@
 import torch
 import triton
-import triton.language as tl
 
 @triton.jit
 @triton.testing.perf_report(
@@ -26,7 +25,7 @@ def benchmark(M, N, provider):
     if provider == 'torch':
         ms = triton.testing.do_bench(lambda: torch.softmax(x, axis=-1))
     if provider == 'triton':
-        ms = triton.testing.do_bench(lambda: softmax(x))
+        ms = triton.testing.do_bench(lambda: softmax(x, tau))
     gbps = lambda ms: 2 * x.numel() * x.element_size() * 1e-9 / (ms * 1e-3)
     return gbps(ms)
 
