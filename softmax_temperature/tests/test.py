@@ -1,4 +1,6 @@
 import torch
+import triton
+import triton.language as tl
 from softmax_temperature.code.naive_implementation import naive_softmax
 from softmax_temperature.code.triton_implementation import triton_softmax
 from triton.runtime import driver
