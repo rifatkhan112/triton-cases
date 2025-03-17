@@ -80,7 +80,7 @@ TOTAL_SRAM_PER_SM = properties["max_shared_mem"]
 # A thread can be thought of as analogous to a single CPU core but far more limited in the operations it can do
 WARP_SIZE = properties["warpSize"]# usually 32 on Nvidia GPUs and 64 on AMD
 
-def softmax(x):
+def triton_softmax(x):
     '''
     helper/wrapper function to 
         1) allocate the output tensor and 
