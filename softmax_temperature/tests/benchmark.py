@@ -3,7 +3,6 @@ import triton
 from softmax_temperature.code.naive_implementation import naive_softmax
 from softmax_temperature.code.triton_implementation import triton_softmax
 
-@triton.jit
 @triton.testing.perf_report(
     triton.testing.Benchmark(
         x_names=['N'],  # argument names to use as an x-axis for the plot
