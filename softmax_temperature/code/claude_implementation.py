@@ -2,199 +2,149 @@ import torch
 import triton
 import triton.language as tl
 
+
 @triton.jit
 def softmax_kernel(
-    output_ptr, input_ptr, temp_ptr,
-    stride_om, stride_on,  # output strides: [M, N]
-    stride_im, stride_in,  # input strides: [M, N]
-    M, N,
+    output_ptr, input_ptr, 
+    n_cols,
+    temperature,
     BLOCK_SIZE: tl.constexpr,
 ):
     """
-    Optimized softmax kernel with temperature parameter for A100 GPU
+    Compute softmax with temperature: softmax(x/temperature)
     
-    Parameters
-    ----------
-    output_ptr : pointer to output tensor
-    input_ptr : pointer to input tensor
-    temp_ptr : pointer to temperature scalar
-    stride_om, stride_on : strides for accessing output tensor
-    stride_im, stride_in : strides for accessing input tensor
-    M : batch size
-    N : sequence length (vector dimension for softmax)
-    BLOCK_SIZE : size of CUDA block for parallel processing
+    Args:
+        output_ptr: Pointer to output tensor
+        input_ptr: Pointer to input tensor
+        n_cols: Number of columns in the input tensor
+        temperature: Temperature parameter for scaling logits
+        BLOCK_SIZE: Size of the CUDA block for parallelization
     """
-    # Map program ID to the row of the output matrix
+    # Map program id to the row of the input tensor
     row_idx = tl.program_id(0)
     
-    # Compute pointers to the row in input and output
-    row_input_ptr = input_ptr + row_idx * stride_im
-    row_output_ptr = output_ptr + row_idx * stride_om
+    # Compute the starting offset for the program
+    row_start_offset = row_idx * n_cols
     
-    # Load temperature scalar (inverse temperature, actually 1/T)
-    inv_temp = tl.load(temp_ptr)
-    
-    # Create offsets for the row elements
+    # Create a range of column indices
     col_offsets = tl.arange(0, BLOCK_SIZE)
-    input_offsets = col_offsets * stride_in
-    output_offsets = col_offsets * stride_on
     
-    # Create a mask for bounds checking
-    mask = col_offsets < N
+    # Create a mask to account for out-of-bounds columns
+    mask = col_offsets < n_cols
     
-    # Load input elements with the mask applied
-    row = tl.load(row_input_ptr + input_offsets, mask=mask, other=-float('inf'))
+    # Load the input data for the current row
+    row_input_ptrs = input_ptr + row_start_offset + col_offsets
+    input_data = tl.load(row_input_ptrs, mask=mask, other=-float('inf'))
     
     # Apply temperature scaling
-    row = row * inv_temp
+    input_data = input_data / temperature
     
-    # Compute softmax numerically stable:
-    # 1. Find max for numerical stability
-    row_max = tl.max(row, axis=0)
+    # Find the maximum value for numerical stability
+    row_max = tl.max(input_data, axis=0)
     
-    # 2. Subtract max from each element to avoid overflow
-    row = row - row_max
+    # Subtract the maximum value from each element to avoid overflow
+    input_data = input_data - row_max
     
-    # 3. Compute exponentials
-    numerator = tl.exp(row)
+    # Calculate exp(x) for each element
+    numerator = tl.exp(input_data)
     
-    # 4. Compute sum of exponentials
+    # Calculate sum(exp(x)) for the denominator
     denominator = tl.sum(numerator, axis=0)
     
-    # 5. Normalize with the sum
+    # Calculate softmax: exp(x) / sum(exp(x))
     softmax_output = numerator / denominator
     
-    # Store the output
-    tl.store(row_output_ptr + output_offsets, softmax_output, mask=mask)
+    # Write the output for the current row
+    row_output_ptrs = output_ptr + row_start_offset + col_offsets
+    tl.store(row_output_ptrs, softmax_output, mask=mask)
 
 
-def softmax_with_temperature(x, temperature=1.0):
+def softmax_with_temperature(input_tensor, temperature=100.0):
     """
-    Wrapper function to call the optimized softmax kernel
+    Wrapper function to apply softmax with temperature parameter
     
-    Parameters
-    ----------
-    x : torch.Tensor
-        Input tensor of shape [M, N] where M is batch dimension and N is sequence length
-    temperature : float, default=1.0
-        Temperature parameter to control the softmax distribution
-        Higher values make the distribution more uniform, lower values make it more peaked
+    Args:
+        input_tensor: Input tensor of shape (batch_size, n_cols)
+        temperature: Temperature parameter to scale logits (default: 100.0)
         
-    Returns
-    -------
-    torch.Tensor
-        Output tensor of shape [M, N] containing softmax probabilities
+    Returns:
+        Output tensor of the same shape as input with softmax applied
     """
-    # Get the shape of the input tensor
-    M, N = x.shape
+    # Check input dimensions
+    assert input_tensor.dim() == 2, "Input tensor must be 2D (batch_size, n_cols)"
     
-    # Allocate memory for output tensor
-    output = torch.empty_like(x)
+    # Get tensor dimensions
+    batch_size, n_cols = input_tensor.shape
     
-    # Calculate inverse temperature (for multiplication instead of division)
-    inv_temp = torch.tensor([1.0 / temperature], device=x.device)
+    # Create output tensor
+    output = torch.empty_like(input_tensor)
     
-    # Determine optimal block size based on N
-    # On A100, 128 is generally a good minimum block size for warp efficiency
-    # Adjust based on N to optimize occupancy
-    if N <= 256:
-        BLOCK_SIZE = 256
-    elif N <= 512:
-        BLOCK_SIZE = 512
-    else:
-        BLOCK_SIZE = 1024
+    # Determine block size for optimal performance on A100
+    # For A100, we want to use a multiple of 128 (A100 has 108 SMs with 128 FP32 cores each)
+    BLOCK_SIZE = triton.next_power_of_2(n_cols)
+    BLOCK_SIZE = min(BLOCK_SIZE, 2048)  # Cap at 2048 for practical reasons
     
-    # Calculate grid size (number of blocks)
-    grid = (M,)
-    
-    # Launch the kernel
+    # Enqueue the kernel
+    grid = (batch_size,)
     softmax_kernel[grid](
-        output, x, inv_temp,
-        output.stride(0), output.stride(1),
-        x.stride(0), x.stride(1),
-        M, N,
+        output, input_tensor, 
+        n_cols,
+        temperature,
         BLOCK_SIZE=BLOCK_SIZE,
     )
     
     return output
 
 
-# Benchmark function to compare against PyTorch's implementation
-def benchmark_softmax(batch_size, seq_length, temperature, num_runs=100):
-    """
-    Benchmark the Triton softmax implementation against PyTorch
-    
-    Parameters
-    ----------
-    batch_size : int
-        Size of the batch dimension
-    seq_length : int
-        Size of the sequence dimension
-    temperature : float
-        Temperature parameter for softmax
-    num_runs : int, default=100
-        Number of runs for benchmarking
-    """
+# Benchmark comparing Triton implementation vs PyTorch
+def benchmark(batch_size=4096, n_cols=2048, temperature=100.0):
     # Create random input tensor
-    x = torch.randn(batch_size, seq_length, device='cuda')
+    x = torch.randn(batch_size, n_cols, device='cuda')
     
-    # Benchmark PyTorch implementation
-    torch_start = torch.cuda.Event(enable_timing=True)
-    torch_end = torch.cuda.Event(enable_timing=True)
+    # PyTorch implementation (naive)
+    def pytorch_softmax():
+        return torch.softmax(x / temperature, dim=1)
     
-    # Warmup
-    for _ in range(10):
-        _ = torch.nn.functional.softmax(x / temperature, dim=1)
+    # Triton implementation
+    def triton_softmax():
+        return softmax_with_temperature(x, temperature)
     
-    torch.cuda.synchronize()
-    torch_start.record()
-    for _ in range(num_runs):
-        _ = torch.nn.functional.softmax(x / temperature, dim=1)
-    torch_end.record()
-    torch.cuda.synchronize()
-    torch_time = torch_start.elapsed_time(torch_end) / num_runs
+    # Run benchmark
+    from torch.utils.benchmark import Timer
     
-    # Benchmark Triton implementation
-    triton_start = torch.cuda.Event(enable_timing=True)
-    triton_end = torch.cuda.Event(enable_timing=True)
+    t_pytorch = Timer(
+        stmt='pytorch_softmax()',
+        globals={'pytorch_softmax': pytorch_softmax}
+    ).blocked_autorange().median * 1000
     
-    # Warmup
-    for _ in range(10):
-        _ = softmax_with_temperature(x, temperature)
+    t_triton = Timer(
+        stmt='triton_softmax()',
+        globals={'triton_softmax': triton_softmax}
+    ).blocked_autorange().median * 1000
     
-    torch.cuda.synchronize()
-    triton_start.record()
-    for _ in range(num_runs):
-        _ = softmax_with_temperature(x, temperature)
-    triton_end.record()
-    torch.cuda.synchronize()
-    triton_time = triton_start.elapsed_time(triton_end) / num_runs
+    # Calculate speedup
+    speedup = t_pytorch / t_triton
     
-    print(f"Batch size: {batch_size}, Sequence length: {seq_length}, Temperature: {temperature}")
-    print(f"PyTorch time: {torch_time:.4f} ms")
-    print(f"Triton time: {triton_time:.4f} ms")
-    print(f"Speedup: {torch_time / triton_time:.2f}x")
+    # Validate correctness
+    torch_result = pytorch_softmax()
+    triton_result = triton_softmax()
+    max_diff = (torch_result - triton_result).abs().max().item()
     
-    # Verify correctness
-    torch_output = torch.nn.functional.softmax(x / temperature, dim=1)
-    triton_output = softmax_with_temperature(x, temperature)
-    max_diff = torch.max(torch.abs(torch_output - triton_output)).item()
-    print(f"Maximum difference: {max_diff:.6f}")
-    print()
+    print(f"PyTorch time: {t_pytorch:.3f}ms")
+    print(f"Triton time: {t_triton:.3f}ms")
+    print(f"Speedup: {speedup:.2f}x")
+    print(f"Max difference: {max_diff:.6f}")
+    
+    return speedup
 
 
-# Example usage
 if __name__ == "__main__":
-    # Test various configurations for benchmarking
-    configs = [
-        # (batch_size, seq_length, temperature)
-        (32, 128, 1.0),
-        (32, 1024, 1.0),
-        (32, 4096, 1.0),
-        (128, 1024, 1.0),
-        (128, 1024, 0.5),
-        (128, 1024, 2.0),
-    ]
-    
-    for batch_size, seq_length, temperature in configs:
-        benchmark_softmax(batch_size, seq_length, temperature)
+    # Test with various sizes to find optimal configurations
+    for batch_size in [1024, 2048, 4096, 8192]:
+        for n_cols in [512, 1024, 2048, 4096]:
+            print(f"\nBenchmarking with batch_size={batch_size}, n_cols={n_cols}")
+            speedup = benchmark(batch_size, n_cols)
+            if speedup >= 6.0:
+                print(f"✓ Target 6x speedup achieved: {speedup:.2f}x")
+            else:
+                print(f"✗ Below target speedup: {speedup:.2f}x")
