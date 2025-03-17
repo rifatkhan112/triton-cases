@@ -28,8 +28,10 @@ def softmax_kernel(output_ptr, input_ptr, input_row_stride, output_row_stride, n
         row = tl.load(input_ptrs, mask=mask, other=-float('inf'))
         # Subtract maximum for numerical stability
         row_minus_max = row - tl.max(row, axis=0)
+        # Temperature parameter
+        tau = 100
         # Note that exponentiation in Triton is fast but approximate (i.e., think __expf in CUDA)
-        numerator = tl.exp(row_minus_max / tau=100)
+        numerator = tl.exp(row_minus_max / tau)
         denominator = tl.sum(numerator, axis=0)
         softmax_output = numerator / denominator
         # Write back output to DRAM
