@@ -1,0 +1,26 @@
+{
+    "id": "softmax_temperature",
+    "difficulty": {
+        "rating": 1,
+        "rationale": "The problem is relatively simple, as a simple implementation of the softmax function with temperature parameters has been asked for."
+    },
+    "category": "Triton",
+    "optimization_type": "algorithmic_transformation",
+    "task_type": ["from_scratch"],
+    "problem_description": "Design a kernel in triton for a softmax function with a temperature parameter equal to 100. Use the wrapper function to queue the kernel and its meta-parameters, which are incredibly well-suited (fast) to the A100 GPU. The benchmark result is expected to be a 6x speedup of the triton implementation compared to the naive for the tuple size of (1823, 781).",
+    "code_context": ["softmax_temperature"],
+    "test_cases": [
+        "softmax_temperature/tests/benchmark.py -> Benchmark the performance improvements of the forward pass.",
+        "softmax_temperature/tests/test.py -> Check closeness of both the PyTorch and Triton implementations."
+    ],
+    "gpu_requirements": ["A100"],
+    "metadata": {
+        "use_case": "Triton kernel for softmax function.",
+        "expected_speedup": "6x speedup over a naive implementation.",
+        "related_ml_concepts": ["Softmax Activation Function"]
+    },
+    "claude_verification": {
+        "attempts": 10,
+        "success": false
+    }
+}
