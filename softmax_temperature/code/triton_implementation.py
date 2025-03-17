@@ -95,5 +95,5 @@ def triton_softmax(x):
     num_programs = min(num_programs, n_rows)
 
     # Create a number of persistent programs.
-    kernel[(num_programs, 1, 1)](y, x, x.stride(0), y.stride(0), n_rows, n_cols, BLOCK_SIZE, num_stages)
+    kernel[(num_programs, 1, 1)](y, x, x.stride(0), y.stride(0), n_rows, n_cols)
     return y
