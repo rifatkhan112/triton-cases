@@ -6,18 +6,15 @@ from triton.runtime import driver
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
-
 def is_hip():
     return triton.runtime.driver.active.get_current_target().backend == "hip"
 
-
 def is_cdna():
-    return is_hip() and triton.runtime.driver.active.get_current_target().arch in ('gfx940', 'gfx941', 'gfx942',
-                                                                                   'gfx90a', 'gfx908')
+    return is_hip() and triton.runtime.driver.active.get_current_target().arch in ('gfx940', 'gfx941', 'gfx942', 'gfx90a', 'gfx908')
 
 @triton.jit
 def softmax_kernel(output_ptr, input_ptr, input_row_stride, output_row_stride, n_rows, n_cols, BLOCK_SIZE: tl.constexpr, num_stages: tl.constexpr, tau):
-    # starting row of the program
+    # Starting row of the program
     row_start = tl.program_id(0)
     row_step = tl.num_programs(0)
     for row_idx in tl.range(row_start, n_rows, row_step, num_stages=num_stages):
@@ -49,8 +46,7 @@ WARP_SIZE = properties["warpSize"]
 target = triton.runtime.driver.active.get_current_target()
 kernels = {}
 
-
-def softmax(x, tau):
+def triton_softmax(x, tau):
     n_rows, n_cols = x.shape
 
     # The block size of each loop iteration is the minor power of two more significant than the number of columns in `x`
