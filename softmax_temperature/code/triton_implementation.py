@@ -65,7 +65,7 @@ def triton_softmax(x, tau):
     y = torch.empty_like(x)
 
     # Pre-compile kernel to get register usage and compute thread occupancy.
-    kernel = softmax_kernel.warmup(y, x, x.stride(0), y.stride(0), n_rows, n_cols, BLOCK_SIZE=BLOCK_SIZE, num_stages=num_stages, num_warps=num_warps, grid=(1, ), tau)
+    kernel = softmax_kernel.warmup(y, x, x.stride(0), y.stride(0), n_rows, n_cols, BLOCK_SIZE=BLOCK_SIZE, num_stages=num_stages, tau, num_warps=num_warps, grid=(1, ))
     kernel._init_handles()
     n_regs = kernel.n_regs
     size_smem = kernel.metadata.shared
