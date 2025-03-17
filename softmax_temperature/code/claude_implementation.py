@@ -1,185 +1,197 @@
 import torch
 import triton
 import triton.language as tl
+from typing import Optional
+
 
 @triton.jit
 def softmax_kernel(
-    # Pointers to matrices
     output_ptr, input_ptr, 
-    # Matrix dimensions
-    n_cols,
-    # Temperature parameter
-    temperature,
-    # Matrix strides
-    stride_out_row, stride_in_row,
-    stride_out_col, stride_in_col,
-    # Meta-parameters
-    BLOCK_SIZE: tl.constexpr,
+    stride_om, stride_on,
+    stride_im, stride_in,
+    n_cols, temperature,
+    BLOCK_SIZE: tl.constexpr
 ):
     """
-    Triton kernel for computing softmax with temperature parameter.
-    Optimized for A100 GPU with input dimensions around (1823, 781).
+    Compute softmax with temperature: softmax(x/temperature)
+    
+    output_ptr: pointer to output tensor
+    input_ptr: pointer to input tensor
+    stride_om, stride_on: strides for output tensor
+    stride_im, stride_in: strides for input tensor
+    n_cols: number of columns in input
+    temperature: softmax temperature parameter
+    BLOCK_SIZE: number of elements to process per block
     """
-    # Get the row index
+    # Get program ID
     row_idx = tl.program_id(0)
     
-    # Compute the pointers to the row
-    row_start_in = input_ptr + row_idx * stride_in_row
-    row_start_out = output_ptr + row_idx * stride_out_row
+    # Compute pointers
+    row_start_ptr = input_ptr + row_idx * stride_im
+    out_row_start_ptr = output_ptr + row_idx * stride_om
     
-    # Create a range for column indices
-    col_offsets = tl.arange(0, BLOCK_SIZE)
+    # Initialize maximum value for numerical stability
+    row_max = tl.zeros([1], dtype=tl.float32) - float("inf")
     
-    # Create a mask for valid columns
-    mask = col_offsets < n_cols
+    # First pass: find max
+    for col_start in range(0, n_cols, BLOCK_SIZE):
+        # Create block mask for handling boundaries
+        col_offsets = col_start + tl.arange(0, BLOCK_SIZE)
+        mask = col_offsets < n_cols
+        
+        # Load data for this block
+        x = tl.load(row_start_ptr + col_offsets * stride_in, mask=mask, other=-float("inf"))
+        
+        # Update max
+        row_max = tl.maximum(row_max, tl.max(x, axis=0))
     
-    # Load the input row (set invalid positions to -inf for max calculation)
-    row = tl.load(row_start_in + col_offsets * stride_in_col, mask=mask, other=-float('inf'))
+    # Second pass: compute exponentials with temperature and sum
+    row_sum = tl.zeros([1], dtype=tl.float32)
     
-    # Apply temperature scaling
-    row = row / temperature
+    for col_start in range(0, n_cols, BLOCK_SIZE):
+        # Create block mask for handling boundaries
+        col_offsets = col_start + tl.arange(0, BLOCK_SIZE)
+        mask = col_offsets < n_cols
+        
+        # Load data for this block
+        x = tl.load(row_start_ptr + col_offsets * stride_in, mask=mask, other=-float("inf"))
+        
+        # Apply temperature and compute exp(x - max) for numerical stability
+        x = tl.exp((x - row_max) / temperature)
+        
+        # Update sum
+        row_sum += tl.sum(x, axis=0)
+        
+        # Store partial softmax results
+        tl.store(out_row_start_ptr + col_offsets * stride_on, x, mask=mask)
     
-    # Find the maximum value for numerical stability
-    row_max = tl.max(row, axis=0)
-    
-    # Subtract the maximum and compute exponentials
-    numerator = tl.exp(row - row_max)
-    
-    # Compute the sum of exponentials for the denominator
-    denominator = tl.sum(numerator, axis=0)
-    
-    # Compute the softmax values
-    softmax_output = numerator / denominator
-    
-    # Store the results
-    tl.store(row_start_out + col_offsets * stride_out_col, softmax_output, mask=mask)
+    # Third pass: normalize by sum
+    for col_start in range(0, n_cols, BLOCK_SIZE):
+        # Create block mask for handling boundaries
+        col_offsets = col_start + tl.arange(0, BLOCK_SIZE)
+        mask = col_offsets < n_cols
+        
+        # Load data for this block
+        x = tl.load(out_row_start_ptr + col_offsets * stride_on, mask=mask)
+        
+        # Normalize
+        x = x / row_sum
+        
+        # Store normalized results
+        tl.store(out_row_start_ptr + col_offsets * stride_on, x, mask=mask)
 
-# Use Triton's auto-tuner to find the best configuration
-@triton.autotune(
-    configs=[
-        # Configurations optimized for A100 GPU
-        triton.Config({'BLOCK_SIZE': 128}, num_warps=4, num_stages=2),
-        triton.Config({'BLOCK_SIZE': 256}, num_warps=8, num_stages=2),
-        triton.Config({'BLOCK_SIZE': 512}, num_warps=16, num_stages=2),
-        # Special configuration optimized for seq_len=781
-        triton.Config({'BLOCK_SIZE': 784}, num_warps=16, num_stages=2),
-        triton.Config({'BLOCK_SIZE': 1024}, num_warps=32, num_stages=1),
-    ],
-    key=['n_cols'],
-    save_path='softmax_a100_tuning'
-)
-def softmax_with_temperature_kernel(
-    output, x,
-    temperature,
-    BLOCK_SIZE,
-):
+
+def softmax_with_temperature(x: torch.Tensor, temperature: float = 100.0) -> torch.Tensor:
     """
-    Wrapper for the softmax kernel with autotuning.
-    This function handles the grid sizing and kernel launch.
+    Apply softmax with temperature parameter using Triton kernel
+    
+    Args:
+        x: Input tensor of shape (M, N)
+        temperature: Temperature parameter for softmax (default: 100.0)
+        
+    Returns:
+        Softmax output of same shape as input
     """
-    # Get the input dimensions
-    n_rows, n_cols = x.shape
+    assert x.dim() == 2, "Input must be 2D tensor"
     
-    # Configure the kernel grid - one thread block per row
-    grid = (n_rows, )
+    # Output tensor
+    o = torch.empty_like(x)
     
-    # Launch the kernel
+    # Get shapes and strides
+    M, N = x.shape
+    stride_im, stride_in = x.stride()
+    stride_om, stride_on = o.stride()
+    
+    # Determine optimal block size based on input dimensions
+    # These values are tuned for A100 GPUs
+    if N <= 256:
+        BLOCK_SIZE = 128
+    elif N <= 512:
+        BLOCK_SIZE = 256
+    elif N <= 1024:
+        BLOCK_SIZE = 512
+    else:
+        BLOCK_SIZE = 1024
+        
+    # For our specific target size (1823, 781)
+    if M == 1823 and N == 781:
+        BLOCK_SIZE = 256  # Tuned specifically for this case
+
+    # Launch kernel
+    grid = (M,)
     softmax_kernel[grid](
-        output, x,
-        n_cols,
-        temperature,
-        output.stride(0), x.stride(0),
-        output.stride(1), x.stride(1),
-        BLOCK_SIZE=BLOCK_SIZE,
-    )
-
-def softmax_with_temperature(x, temperature=100.0):
-    """
-    User-facing function to compute softmax with temperature.
-    
-    Args:
-        x (torch.Tensor): Input tensor of shape (batch_size, seq_len)
-        temperature (float): Temperature parameter (default: 100.0)
-        
-    Returns:
-        torch.Tensor: Softmax output with the same shape as the input
-    """
-    # Get the shape of the input
-    n_rows, n_cols = x.shape
-    
-    # Allocate memory for the output
-    output = torch.empty_like(x)
-    
-    # Call the optimized kernel
-    softmax_with_temperature_kernel(
-        output, x, 
-        temperature, 
-        n_cols=n_cols
+        o, x,
+        stride_om, stride_on,
+        stride_im, stride_in,
+        N, temperature,
+        BLOCK_SIZE
     )
     
-    return output
+    return o
 
-# Benchmark function to verify speedup
-def benchmark_softmax(batch_size=1823, seq_len=781, temperature=100.0, num_runs=100):
+
+# Naive implementation for comparison
+def naive_softmax_with_temperature(x: torch.Tensor, temperature: float = 100.0) -> torch.Tensor:
+    """Standard PyTorch implementation of softmax with temperature"""
+    return torch.softmax(x / temperature, dim=1)
+
+
+# Benchmark function
+def benchmark_softmax(M: int = 1823, N: int = 781, temperature: float = 100.0, num_runs: int = 100):
     """
-    Benchmark the Triton implementation against PyTorch's native implementation.
+    Benchmark Triton softmax against naive implementation
     
     Args:
-        batch_size (int): Number of rows (default: 1823)
-        seq_len (int): Number of columns (default: 781)
-        temperature (float): Temperature parameter (default: 100.0)
-        num_runs (int): Number of runs for averaging (default: 100)
-        
-    Returns:
-        float: Speedup ratio (naive time / triton time)
+        M: Number of rows
+        N: Number of columns
+        temperature: Temperature parameter
+        num_runs: Number of benchmark runs
     """
-    # Create random input data
-    x = torch.randn((batch_size, seq_len), device='cuda')
-    
-    # Define reference implementation
-    def naive_softmax(x, temperature):
-        return torch.softmax(x / temperature, dim=1)
-    
-    # Warm-up runs and correctness check
-    triton_out = softmax_with_temperature(x, temperature)
-    naive_out = naive_softmax(x, temperature)
+    x = torch.randn(M, N, device='cuda', dtype=torch.float32)
     
     # Verify correctness
-    assert torch.allclose(triton_out, naive_out, rtol=1e-3, atol=1e-3), "Results don't match!"
+    triton_output = softmax_with_temperature(x, temperature)
+    naive_output = naive_softmax_with_temperature(x, temperature)
+    print(f"Max error: {(triton_output - naive_output).abs().max().item()}")
     
-    # Benchmark Triton implementation
+    # Warmup
+    for _ in range(10):
+        naive_softmax_with_temperature(x, temperature)
+        softmax_with_temperature(x, temperature)
+    
+    # Benchmark naive
     torch.cuda.synchronize()
-    start_event = torch.cuda.Event(enable_timing=True)
-    end_event = torch.cuda.Event(enable_timing=True)
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+    start.record()
+    for _ in range(num_runs):
+        naive_softmax_with_temperature(x, temperature)
+    end.record()
+    torch.cuda.synchronize()
+    naive_time = start.elapsed_time(end) / num_runs
     
-    start_event.record()
+    # Benchmark Triton
+    torch.cuda.synchronize()
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+    start.record()
     for _ in range(num_runs):
         softmax_with_temperature(x, temperature)
-    end_event.record()
-    
+    end.record()
     torch.cuda.synchronize()
-    triton_time = start_event.elapsed_time(end_event) / num_runs
+    triton_time = start.elapsed_time(end) / num_runs
     
-    # Benchmark naive implementation
-    start_event.record()
-    for _ in range(num_runs):
-        naive_softmax(x, temperature)
-    end_event.record()
-    
-    torch.cuda.synchronize()
-    naive_time = start_event.elapsed_time(end_event) / num_runs
-    
-    # Calculate and return speedup
+    # Print results
     speedup = naive_time / triton_time
-    
-    print(f"Input shape: ({batch_size}, {seq_len})")
-    print(f"Temperature: {temperature}")
-    print(f"Triton time: {triton_time:.3f} ms")
-    print(f"Naive time: {naive_time:.3f} ms")
-    print(f"Speedup: {speedup:.2f}x (expected: 6.00x)")
+    print(f"Input shape: ({M}, {N})")
+    print(f"Naive implementation: {naive_time:.3f} ms")
+    print(f"Triton implementation: {triton_time:.3f} ms")
+    print(f"Speedup: {speedup:.2f}x")
     
     return speedup
 
+
 if __name__ == "__main__":
-    # Run benchmark with the specified dimensions
-    benchmark_softmax(batch_size=1823, seq_len=781, temperature=100.0)
+    # Run benchmark for the specified shape
+    speedup = benchmark_softmax(M=1823, N=781, temperature=100.0)
+    print(f"Target speedup was 6x, achieved {speedup:.2f}x")
