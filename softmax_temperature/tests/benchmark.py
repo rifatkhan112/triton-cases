@@ -1,6 +1,6 @@
-
-
-
+import torch
+import triton
+import triton.language as tl
 
 @triton.jit
 @triton.testing.perf_report(
@@ -19,7 +19,6 @@
         args={'M': 4096},  # values for function arguments not in `x_names` and `y_name`
     ))
 
-
 def benchmark(M, N, provider):
     x = torch.randn(M, N, device=DEVICE, dtype=torch.float32)
     stream = getattr(torch, DEVICE.type).Stream()
@@ -30,6 +29,5 @@ def benchmark(M, N, provider):
         ms = triton.testing.do_bench(lambda: softmax(x))
     gbps = lambda ms: 2 * x.numel() * x.element_size() * 1e-9 / (ms * 1e-3)
     return gbps(ms)
-
 
 benchmark.run(show_plots=True, print_data=True)
