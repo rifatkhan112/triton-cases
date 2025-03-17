@@ -25,7 +25,7 @@ def benchmark(M, N, provider):
     stream = getattr(torch, DEVICE.type).Stream()
     getattr(torch, DEVICE.type).set_stream(stream)
     if provider == 'torch':
-        ms = triton.testing.do_bench(lambda: naive_softmax(x))
+        ms = triton.testing.do_bench(lambda: naive_softmax(x, tau))
     if provider == 'triton':
         ms = triton.testing.do_bench(lambda: triton_softmax(x, tau))
     gbps = lambda ms: 2 * x.numel() * x.element_size() * 1e-9 / (ms * 1e-3)
