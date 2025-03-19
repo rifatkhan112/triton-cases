@@ -10,6 +10,21 @@ torch.manual_seed(316165)
 
 @pytest.mark.parametrize("order", [1])
 @pytest.mark.parametrize("tensor_shape", [(512, 3), (128, 16, 3), (256, 8, 8, 3)])
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        pytest.param(
+            torch.float16,
+            marks=pytest.mark.xfail(raises=AssertionError, reason="low precision"),
+        ),
+        pytest.param(
+            torch.bfloat16,
+            marks=pytest.mark.xfail(raises=AssertionError, reason="low precision"),
+        ),
+        torch.float32,
+        torch.float64,
+    ],
+)
 
 def test_forward_equivalence(order, device, tensor_shape, dtype):
     """
@@ -23,6 +38,21 @@ def test_forward_equivalence(order, device, tensor_shape, dtype):
 
 @pytest.mark.parametrize("order", [1])
 @pytest.mark.parametrize("tensor_shape", [(512, 3), (128, 16, 3), (256, 8, 8, 3)])
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        pytest.param(
+            torch.float16,
+            marks=pytest.mark.xfail(raises=AssertionError, reason="low precision"),
+        ),
+        pytest.param(
+            torch.bfloat16,
+            marks=pytest.mark.xfail(raises=AssertionError, reason="low precision"),
+        ),
+        torch.float32,
+        torch.float64,
+    ],
+)
 
 def test_backward_equivalence(order, device, tensor_shape, dtype):
     """
