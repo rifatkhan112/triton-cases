@@ -13,14 +13,13 @@ torch.manual_seed(316165)
 
 def test_forward_equivalence(order, device, tensor_shape, dtype):
     """
-    Tests the numerical equivalence of the PyTorch versus
-    the Triton implementations. This is mostly to ensure that
-    writing outputs back out is being done correctly.
+    This test equivalences the PyTorch and Triton implementations numerically. Its main purpose is to ensure that outputs are written back out correctly.
     """
     coords = torch.rand(tensor_shape, device, dtype=dtype)
     triton_out = triton_spherical_harmonic(order, coords)
     torch_out = torch_spherical_harmonic(order, coords)
     assert torch.allclose(triton_out, torch_out, atol=1e-5, rtol=1e-3)
+    print("PASSED")
 
 @pytest.mark.parametrize("order", [1])
 @pytest.mark.parametrize("tensor_shape", [(512, 3), (128, 16, 3), (256, 8, 8, 3)])
@@ -41,3 +40,4 @@ def test_backward_equivalence(order, device, tensor_shape, dtype):
     triton_out.backward(gradient=torch.ones_like(triton_out))
     triton_grad = coords.grad.clone().detach()
     assert torch.allclose(triton_grad, torch_grad, atol=1e-5, rtol=1e-3)
+    print("PASSED")
