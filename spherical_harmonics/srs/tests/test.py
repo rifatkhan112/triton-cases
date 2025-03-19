@@ -4,11 +4,10 @@ import torch
 from spherical_harmonics.srs.code.naive_implementation import torch_spherical_harmonic
 from spherical_harmonics.srs.code.triton_implementation import triton_spherical_harmonic
 
-device = torch.device(f'cuda:{torch.cuda.current_device()}')
-
 torch.manual_seed(316165)
 
 @pytest.mark.parametrize("order", [1])
+@pytest.mark.parametrize("device", [torch.device(f'cuda:{torch.cuda.current_device()}')])
 @pytest.mark.parametrize("tensor_shape", [(512, 3), (128, 16, 3), (256, 8, 8, 3)])
 @pytest.mark.parametrize(
     "dtype",
@@ -37,6 +36,7 @@ def test_forward_equivalence(order, device, tensor_shape, dtype):
     print("PASSED")
 
 @pytest.mark.parametrize("order", [1])
+@pytest.mark.parametrize("device", [torch.device(f'cuda:{torch.cuda.current_device()}')])
 @pytest.mark.parametrize("tensor_shape", [(512, 3), (128, 16, 3), (256, 8, 8, 3)])
 @pytest.mark.parametrize(
     "dtype",
