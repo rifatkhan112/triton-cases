@@ -41,3 +41,8 @@ def test_backward_equivalence(order, device, tensor_shape, dtype):
     triton_grad = coords.grad.clone().detach()
     assert torch.allclose(triton_grad, torch_grad, atol=1e-5, rtol=1e-3)
     print("PASSED")
+
+if __name__ == "__main__":
+    # always run unit-tests
+    test_forward_equivalence()
+    test_backward_equivalence()
