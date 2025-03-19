@@ -35,7 +35,7 @@ def test_forward_equivalence(order, device, tensor_shape, dtype):
     coords = torch.rand(tensor_shape, device, dtype=dtype)
     triton_out = triton_spherical_harmonic(order, coords)
     torch_out = torch_spherical_harmonic(order, coords)
-    assert torch.allclose(triton_out, torch_out, atol=1e-5, rtol=1e-3)\
+    assert torch.allclose(triton_out, torch_out, atol=1e-5, rtol=1e-3), \
         f"""Mismatch in output for order={order}, tensor_shape={tensor_shape}, dtype={dtype},
             Output Tensor:
             {triton_out}
@@ -78,7 +78,7 @@ def test_backward_equivalence(order, device, tensor_shape, dtype):
     triton_out = triton_spherical_harmonic(order, coords)
     triton_out.backward(gradient=torch.ones_like(triton_out))
     triton_grad = coords.grad.clone().detach()
-    assert torch.allclose(triton_grad, torch_grad, atol=1e-5, rtol=1e-3)\
+    assert torch.allclose(triton_grad, torch_grad, atol=1e-5, rtol=1e-3), \
         f"""Mismatch in output for order={order}, tensor_shape={tensor_shape}, dtype={dtype},
             Output Tensor:
             {triton_grad}
