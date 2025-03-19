@@ -4,10 +4,13 @@ import torch
 from spherical_harmonics.srs.code.naive_implementation import torch_spherical_harmonic
 from spherical_harmonics.srs.code.triton_implementation import triton_spherical_harmonic
 
+device = torch.device("cuda") if torch.cuda.is_available() else None
+if device is None:
+    raise ValueError("CUDA is not available")
+
 torch.manual_seed(316165)
 
 @pytest.mark.parametrize("order", [1])
-@pytest.mark.parametrize("device", [torch.device(f'cuda:{torch.cuda.current_device()}')])
 @pytest.mark.parametrize("tensor_shape", [(512, 3), (128, 16, 3), (256, 8, 8, 3)])
 @pytest.mark.parametrize(
     "dtype",
@@ -32,11 +35,17 @@ def test_forward_equivalence(order, device, tensor_shape, dtype):
     coords = torch.rand(tensor_shape, device, dtype=dtype)
     triton_out = triton_spherical_harmonic(order, coords)
     torch_out = torch_spherical_harmonic(order, coords)
-    assert torch.allclose(triton_out, torch_out, atol=1e-5, rtol=1e-3)
-    print("PASSED")
+    assert torch.allclose(triton_out, torch_out, atol=1e-5, rtol=1e-3)\
+        f"""Mismatch in output for order={order}, tensor_shape={tensor_shape}, dtype={dtype},
+            Output Tensor:
+            {triton_out}
+            Outupt Ref Tensor:
+            {torch_out}
+            Max differnece:
+            {torch.abs(triton_out - torch_out).max()}
+        """
 
 @pytest.mark.parametrize("order", [1])
-@pytest.mark.parametrize("device", [torch.device(f'cuda:{torch.cuda.current_device()}')])
 @pytest.mark.parametrize("tensor_shape", [(512, 3), (128, 16, 3), (256, 8, 8, 3)])
 @pytest.mark.parametrize(
     "dtype",
@@ -69,10 +78,12 @@ def test_backward_equivalence(order, device, tensor_shape, dtype):
     triton_out = triton_spherical_harmonic(order, coords)
     triton_out.backward(gradient=torch.ones_like(triton_out))
     triton_grad = coords.grad.clone().detach()
-    assert torch.allclose(triton_grad, torch_grad, atol=1e-5, rtol=1e-3)
-    print("PASSED")
-
-if __name__ == "__main__":
-    # always run unit-tests
-    test_forward_equivalence()
-    test_backward_equivalence()
+    assert torch.allclose(triton_grad, torch_grad, atol=1e-5, rtol=1e-3)\
+        f"""Mismatch in output for order={order}, tensor_shape={tensor_shape}, dtype={dtype},
+            Output Tensor:
+            {triton_grad}
+            Outupt Ref Tensor:
+            {torch_grad}
+            Max differnece:
+            {torch.abs(triton_grad - torch_grad).max()}
+        """
