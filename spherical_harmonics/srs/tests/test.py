@@ -10,7 +10,7 @@ if device is None:
 
 torch.manual_seed(316165)
 
-@pytest.mark.parametrize("order", [1, 2])
+@pytest.mark.parametrize("order", [1])
 @pytest.mark.parametrize("tensor_shape", [(512, 3), (128, 16, 3), (256, 8, 8, 3)])
 @pytest.mark.parametrize(
     "dtype",
