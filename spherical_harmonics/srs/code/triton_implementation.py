@@ -105,5 +105,5 @@ def triton_spherical_harmonic(
     )
     for l, offset in zip(l_values, offsets):
         sph_harm_func = _get_autograd_func(l)
-        sph_harm_func.apply(coords, mask, BLOCK_SIZE, offset)
+        sph_harm_func.apply(coords, output_tensor, mask, BLOCK_SIZE, offset)
     return output_tensor
