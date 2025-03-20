@@ -32,6 +32,7 @@ DEVICE = torch.device("cuda")
 )
 def benchmark(BS, LS, dtype, provider):
     order = 1
+    tensor_shape = (512, 3)
     coords = torch.rand(tensor_shape, device, dtype=dtype)
 
     quantiles = [0.5, 0.2, 0.8]
