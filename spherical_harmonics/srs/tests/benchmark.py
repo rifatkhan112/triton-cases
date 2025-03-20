@@ -20,7 +20,7 @@ DEVICE = torch.device("cuda")
         styles=[("blue", "-"), ("green", "-")],  # Line styles.
         xlabel="Length",  # Label name for the x-axis.
         ylabel="ms",  # Label name for the y-axis.
-        plot_name="batched-layer-norm-performance",  # Name for the plot. Used also as a file name for saving the plot.
+        plot_name="spherical-harmonics-performance",  # Name for the plot. Used also as a file name for saving the plot.
         args={
             "BS": 4096,
             "dtype": torch.float32,
