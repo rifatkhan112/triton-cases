@@ -44,6 +44,7 @@ def test_forward_equivalence(order, device, tensor_shape, dtype):
             Max differnece:
             {torch.abs(triton_out - torch_out).max()}
         """
+    print("PASSED")
 
 @pytest.mark.parametrize("order", [1])
 @pytest.mark.parametrize("tensor_shape", [(512, 3), (128, 16, 3), (256, 8, 8, 3)])
@@ -87,3 +88,4 @@ def test_backward_equivalence(order, device, tensor_shape, dtype):
             Max differnece:
             {torch.abs(triton_grad - torch_grad).max()}
         """
+    print("PASSED")
