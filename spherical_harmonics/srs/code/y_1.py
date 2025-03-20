@@ -9,7 +9,6 @@ __all__ = ["FirstOrderSphericalHarmonic"]
 class FirstOrderSphericalHarmonic(torch.autograd.Function):
     @staticmethod
     def forward(
-        ctx,
         coords: torch.Tensor,
         mask: torch.Tensor | None = None,
         block_size: int = 64,
