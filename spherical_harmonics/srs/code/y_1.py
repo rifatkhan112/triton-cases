@@ -9,6 +9,7 @@ __all__ = ["FirstOrderSphericalHarmonic"]
 class FirstOrderSphericalHarmonic(torch.autograd.Function):
     @staticmethod
     def forward(
+        ctx,
         coords: torch.Tensor,
         mask: torch.Tensor | None = None,
         block_size: int = 64,
@@ -45,6 +46,7 @@ class FirstOrderSphericalHarmonic(torch.autograd.Function):
         )
         return coord_grad_output
 
+
 def _torch_fwd(coords: torch.Tensor) -> torch.Tensor:
     """
     PyTorch implementation of the kernel. This is designed
@@ -75,6 +77,7 @@ def _torch_fwd(coords: torch.Tensor) -> torch.Tensor:
     Y11 = y * CONST_00
     Y12 = z * CONST_00
     return torch.cat([Y10, Y11, Y12], dim=-1)
+
 
 @triton.jit
 def first_order_fwd(
@@ -119,6 +122,7 @@ def first_order_fwd(
         Y12,
         mask=output_row_offset + 2 < output_numel,
     )
+
 
 @triton.jit
 def first_order_bwd(
