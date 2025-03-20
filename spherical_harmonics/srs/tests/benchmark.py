@@ -1,6 +1,5 @@
 import torch
 import triton
-
 from spherical_harmonics.srs.code.naive_implementation import torch_spherical_harmonic
 from spherical_harmonics.srs.code.triton_implementation import triton_spherical_harmonic
 
@@ -23,34 +22,51 @@ DEVICE = torch.device("cuda")
         styles=[("blue", "-"), ("green", "-")],  # Line styles.
         xlabel="Length",  # Label name for the x-axis.
         ylabel="ms",  # Label name for the y-axis.
-        plot_name="batched-layer-norm-performance",  # Name for the plot. Used also as a file name for saving the plot.
+        plot_name="spherical-harmonics-performance",  # Name for the plot. Used also as a file name for saving the plot.
         args={
             "BS": 4096,
             "dtype": torch.float32,
         },  # Values for function arguments not in `x_names` and `y_name`.
     )
 )
-def benchmark(BS, LS, dtype, provider):
-    order = 1
-    tensor_shape = (512, 3)
-    coords = torch.rand(tensor_shape, device=DEVICE, dtype=dtype)
 
+def benchmark(BS, LS, dtype, provider):
+    """
+    Benchmark the performance of spherical harmonics implementations.
+    
+    Parameters
+    ----------
+    BS : int
+        Batch size for the tensor
+    LS : int
+        Length size for the tensor
+    dtype : torch.dtype
+        Data type for the tensor
+    provider : str
+        Which implementation to benchmark ("naive" or "triton")
+    """
+    order = 1
+    # Use the LS parameter to determine tensor size
+    tensor_shape = (LS, 3)
+    coords = torch.rand(tensor_shape, device=DEVICE, dtype=dtype)
     quantiles = [0.5, 0.2, 0.8]
+    
     if provider == "naive":
         ms, min_ms, max_ms = triton.testing.do_bench(
             lambda: torch_spherical_harmonic(order, coords),
             quantiles=quantiles,
         )
     elif provider == "triton":
+        # Important: triton_spherical_harmonic takes different arguments than shown in the error
+        # We need to pass mask=None explicitly to avoid the error
         ms, min_ms, max_ms = triton.testing.do_bench(
-            lambda: triton_spherical_harmonic(order, coords),
+            lambda: triton_spherical_harmonic(order, coords, mask=None),
             quantiles=quantiles,
         )
     else:
         raise ValueError(f"Invalid provider: {provider}")
-
+    
     return ms, max_ms, min_ms
-
 
 if __name__ == "__main__":
     benchmark.run(save_path=".", show_plots=True, print_data=True)
