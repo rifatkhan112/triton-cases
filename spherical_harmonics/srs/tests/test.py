@@ -8,7 +8,7 @@ device = torch.device("cuda") if torch.cuda.is_available() else None
 if device is None:
     raise ValueError("CUDA is not available")
 
-torch.manual_seed(316165)
+torch.manual_seed(42)
 
 @pytest.mark.parametrize("order", [1, 2])
 @pytest.mark.parametrize("tensor_shape", [(512, 3), (128, 16, 3), (256, 8, 8, 3)])
