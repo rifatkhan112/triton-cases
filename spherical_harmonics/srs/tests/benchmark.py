@@ -47,5 +47,5 @@ def benchmark(BS, LS, dtype, provider):
         raise ValueError(f"Invalid provider: {provider}")
     return ms, max_ms, min_ms
     
-if name == "__main__":
+if __name__ == "__main__":
     benchmark.run(save_path=".", show_plots=True, print_data=True)
